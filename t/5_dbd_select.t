@@ -156,7 +156,7 @@ if ($result ne $expected_result)
 	}
 print "ok 13\n";
 
-$command = "select facility,roomname from rooms where roomname > ? or facility = ? order by facility";
+$command = "select facility,roomname from rooms where roomname > ? or facility = ? order by roomname";
 print "Prepare command\t`$command'\n";
 $sth = $dbh->prepare($command) or do
 	{
@@ -243,22 +243,22 @@ MacGrfx Main
 Mix J Audio
 BAY 7 Main
 __END_DATA__
+Audio ADR-Foley
+Film FILM 1
+Film FILM 2
+Film FILM 3
+Audio Flambe
+Main Gigapix
+Main MacGrfx
 Audio Mach Rm
-Audio Transfer
+Audio Mix A
+Audio Mix B
+Audio Mix C
+Audio Mix D
+Audio Mix E
 Audio Mix F
 Audio Mix G
 Audio Mix H
 Audio Mix J
-Audio Flambe
-Audio Mix C
-Audio Mix B
-Audio Mix A
-Audio Mix D
-Audio Mix E
-Audio ADR-Foley
 Film SCANNING
-Film FILM 2
-Film FILM 1
-Film FILM 3
-Main MacGrfx
-Main Gigapix
+Audio Transfer

@@ -12,7 +12,7 @@ use XBase::Base;
 
 use vars qw( $VERSION @ISA );
 @ISA = qw( XBase::Base );
-$VERSION = '0.068';
+$VERSION = '0.0696';
 
 # Read header is called from open to fill the object structures
 sub read_header
@@ -21,7 +21,7 @@ sub read_header
 	my %options = @_;
 
 	my $header;
-	$self->{'fh'}->read($header, 512) == 512 or do
+	$self->read($header, 512) == 512 or do
 		{ $self->Error("Error reading header of $self->{'filename'}: $!\n"); return; };
 
 	my ($next_for_append, $block_size, $version);
@@ -53,7 +53,7 @@ sub read_header
 	$block_size = 512 if int($block_size) == 0;
 
 	@{$self}{ qw( next_for_append header_len record_len version ) }
-		= ( $next_for_append, 512, $block_size, $version );
+		= ( $next_for_append, $block_size, $block_size, $version );
 
 	$self->{'memosep'} = ( $options{'memosep'} or "\x1a\x1a" );
 
@@ -172,9 +172,9 @@ sub read_record
 		}
 	my ($unused_id, $length) = unpack $unpackstr, $buffer;
 	my $block_size = $self->{'record_len'};
-	if ($length < $block_size - 8)
-		{ return substr $buffer, 8, $length; }
-	my $rest_length = $length - ($block_size - 8);
+	if ($length < $block_size)
+		{ return substr $buffer, 8, $length - 8; }
+	my $rest_length = $length - $block_size;
 	my $rest_data = $self->SUPER::read_record($num + 1, $rest_length);
 	if (not defined $rest_data) { return; }
 	return substr($buffer, 8) . $rest_data;
@@ -185,7 +185,7 @@ sub write_record
 	my ($self, $num) = (shift, shift);
 	my $type = shift;
 	my $data = join "", @_;
-	my $length = length $data;
+	my $length = (length $data) + 8;
 
 	my $startfield = "\xff\xff\x08\x00" . pack('V', $length);
 	if (ref $self eq 'XBase::Memo::Fox')
@@ -202,7 +202,7 @@ sub write_record
 		my $buffer = $self->read_record($num);
 		if (defined $buffer)
 			{
-			my $length = length $buffer;
+			my $length = (length $buffer) - 8;
 			my $record_len = $self->{'record_len'};
 			my $space_in_blocks =
 				int (($length + $record_len - 11) / $record_len);
@@ -249,7 +249,7 @@ specify their specific B<read_record> and B<write_record> methods.
 
 =head1 VERSION
 
-0.068
+0.0696
 
 =head1 AUTHOR
 
