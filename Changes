@@ -1,6 +1,24 @@
 
 Revision history for Perl extension XBase and DBD::Xbase.
 
+0.173 Tue Feb  6 11:18:46 MET 2001
+	XBase: year encoding not correct in dbf header, reported
+	by Helmut Jarausch.
+
+0.172 Tue Feb  6 10:22:11 MET 2001
+	XBase::Memo: creating of fpt supported; bug pointed out by
+	Massimo Matteuzzi.
+
+0.170 Fri Jan 26 18:35:01 MET 2001
+	XBase::idx: create support and better reading support.
+
+	XBase: password protection explored
+
+0.165 Mon Jan 22 19:33:01 MET 2001
+	XBase: better sanity checks in dump_records.
+
+	XBase::SQL: added support for not in SQL command.
+
 0.162 Sun Jan 21 17:53:05 MET 2001
 	XBase::IndexCursor: error by one in last_fetched.
 

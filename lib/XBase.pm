@@ -20,7 +20,7 @@ use XBase::Base;		# will give us general methods
 use vars qw( $VERSION $errstr $CLEARNULLS @ISA );
 
 @ISA = qw( XBase::Base );
-$VERSION = '0.162';
+$VERSION = '0.173';
 $CLEARNULLS = 1;		# Cut off white spaces from ends of char fields
 
 *errstr = \$XBase::Base::errstr;
@@ -64,8 +64,12 @@ sub read_header
 	$self->read($header, 32) == 32 or do
 		{ __PACKAGE__->Error("Error reading header of $self->{'filename'}: $!\n"); return; };
 
-	@{$self}{ qw( version last_update num_rec header_len record_len ) }
-		= unpack 'Ca3Vvv', $header;	# parse the data
+	@{$self}{ qw( version last_update num_rec header_len record_len encrypted ) }
+		= unpack 'Ca3Vvv@15a1', $header;	# parse the data
+
+###	if (0 and $self->{'encrypted'} ne "\000")
+###			{ __PACKAGE__->Error("We don't support encrypted files, sorry.\n"); return; };
+
 	my $header_len = $self->{'header_len'};
 
 	my ($names, $types, $lengths, $decimals) = ( [], [], [], [] );
@@ -390,6 +394,7 @@ sub dump_records
 		}
 
 	my @fields = ();
+	my @unknown_fields;
 	if (defined $fields)
 		{
 		if (ref $fields eq 'ARRAY') { @fields = @$fields; }
@@ -403,23 +408,38 @@ sub dump_records
 					{ $i++; }
 				elsif ($fields[$i] =~ /^(.*)-(.*)/)
 					{
+					local $^W = 0;
 					my @allfields = $self->field_names;
 					my ($start, $end) = ($1, $2);
 					if ($start eq '')
 						{ $start = $allfields[0]; }
 					if ($end eq '')
 						{ $end = $allfields[$#allfields]; }
-					$start = $self->field_name_to_num($start);
-					$end = $self->field_name_to_num($end);
+					my $start_num = $self->field_name_to_num($start);
+					my $end_num = $self->field_name_to_num($end);
+					if ($start ne '' and not defined $start_num) {
+						push @unknown_fields, $start;
+						}
+					if ($end ne '' and not defined $end_num) {
+						push @unknown_fields, $end;
+						}
 					unless (defined $start and defined $end)
 						{ $start = 0; $end = -1; }
 					
-					splice @fields, $i, 1, @allfields[$start .. $end];
+					splice @fields, $i, 1, @allfields[$start_num .. $end_num];
+					}
+				else {
+					push @unknown_fields, $fields[$i];
+					$i++;
 					}
 				}
 			}
 		}
 
+	if (@unknown_fields) {
+		$self->Error("There have been unknown fields `@unknown_fields' specified.\n");
+		return 0;
+		}
 	my $cursor = $self->prepare_select(@fields);
 	my @record;
 	if (defined $table)
@@ -470,7 +490,6 @@ sub get_record_nf
 	{
 	my ($self, $num, @fieldnums) = @_;
 	my $data = $self->read_record($num) or return;
-
 	if (not @fieldnums)
 		{ @fieldnums = ( 0 .. $self->last_field ); }
 	my $unpack = join ' ', '@0a1', map {
@@ -482,6 +501,16 @@ sub get_record_nf
 	my @fns = (\&_read_deleted, map { (defined $_ and defined $rproc->[$_]) ? $rproc->[$_] : sub { undef; }; } @fieldnums);
 
 	my @out = unpack $unpack, $data;
+### 	if ($self->{'encrypted'} ne "\000") {
+### 		for my $data (@out) {
+### 			for (my $i = 0; $i < length($data); $i++) {
+### 				## my $num = unpack 'C', substr($data, $i, 1);
+### 				## substr($data, $i, 1) = 	pack 'C', (($num >> 3) | ($num << 5) ^ 020);
+### 				my $num = unpack 'C', substr($data, $i, 1);
+### 				substr($data, $i, 1) = 	pack 'C', (($num >> 1) | ($num << 7) ^ 052);
+### 				}
+### 			}
+### 		}
 
 	for (@out) { $_ = &{ shift @fns }($_); }
 
@@ -536,7 +565,18 @@ sub set_record
 
 	for (my $i = 0; $i <= $#$wproc; $i++)
 		{ $data[$i] = &{ $wproc->[$i] }($data[$i]); }
-	$self->write_record($num, ' ', @data);
+	unshift @data, ' ';
+
+### 	if ($self->{'encrypted'} ne "\000") {
+### 		for my $data (@data) {
+### 			for (my $i = 0; $i < length($data); $i++) {
+### 				my $num = unpack 'C', substr($data, $i, 1);
+### 				substr($data, $i, 1) = 	pack 'C', (($num << 3) | ($num >> 5) ^ 020);
+### 				}
+### 			}
+### 		}
+
+	$self->write_record($num, @data);
 	}
 
 # Write record, fields are specified as hash, unspecified are set to
@@ -581,16 +621,6 @@ sub delete_record
 	{
 	my ($self, $num) = @_;
 	$self->NullError();
-	if (defined $self->{'attached_index_columns'}) {
-		my @nfs = keys %{$self->{'attached_index_columns'}};
-		my ($del, @old_data) = $self->get_record_nf($num, @nfs);
-
-		for my $nf (@nfs) {
-			for my $idx (@{$self->{'attached_index_columns'}{$nf}}) {
-				$idx->delete($old_data[$nf], $num + 1);
-				}
-			}
-		}
 	$self->write_record($num, "*");
 	1;
 	}
@@ -599,17 +629,6 @@ sub undelete_record
 	my ($self, $num) = @_;
 	$self->NullError();
 	$self->write_record($num, " ");
-
-	if (defined $self->{'attached_index_columns'}) {
-		my @nfs = keys %{$self->{'attached_index_columns'}};
-		my ($del, @new_data) = $self->get_record_nf($num, @nfs);
-
-		for my $nf (@nfs) {
-			for my $idx (@{$self->{'attached_index_columns'}{$nf}}) {
-				$idx->insert($new_data[$nf], $num + 1);
-				}
-			}
-		}
 	1;
 	}
 
@@ -618,7 +637,7 @@ sub update_last_change
 	{
 	my $self = shift;
 	return 1 if defined $self->{'updated_today'};
-	my ($y, $m, $d) = (localtime)[5, 4, 3]; $m++;
+	my ($y, $m, $d) = (localtime)[5, 4, 3]; $m++; $y -= 100 if $y >= 100;
 	$self->write_to(1, pack "C3", ($y, $m, $d)) or return;
 	$self->{'updated_today'} = 1;
 	}
@@ -632,32 +651,38 @@ sub update_last_record
 	}
 
 # Creating new dbf file
-sub create
-	{
+sub create {
 	XBase->NullError();
 	my $class = shift;
 	my %options = @_;
-	if (ref $class)
-		{ %options = ( %$class, %options ); $class = ref $class; }
+	if (ref $class) {
+		%options = ( %$class, %options ); $class = ref $class;
+	}
 
 	my $version = $options{'version'};
-	$version = 3 unless defined $version;
+	if (not defined $version) {
+		if (defined $options{'memofile'}
+			and $options{'memofile'} =~ /\.fpt$/i) {
+			$version = 0xf5;
+		} else {
+			$version = 3;
+		}
+	}
 
 	my $key;
-	for $key ( qw( field_names field_types field_lengths field_decimals ) )
-		{
-		if (not defined $options{$key})
-			{
+	for $key ( qw( field_names field_types field_lengths field_decimals ) ) {
+		if (not defined $options{$key}) {
 			__PACKAGE__->Error("Tag $key must be specified when creating new table\n");
 			return;
-			}
 		}
+	}
+
+	my $needmemo = 0;
 
 	my $fieldspack = '';
 	my $record_len = 1;
 	my $i;
-	for $i (0 .. $#{$options{'field_names'}})
-		{
+	for $i (0 .. $#{$options{'field_names'}}) {
 		my $name = uc $options{'field_names'}[$i];
 		$name = "FIELD$i" unless defined $name;
 		$name .= "\0";
@@ -667,12 +692,11 @@ sub create
 		my $length = $options{'field_lengths'}[$i];
 		my $decimal = $options{'field_decimals'}[$i];
 
-		if (not defined $length)		# defaults
-			{
+		if (not defined $length) {		# defaults
 			if ($type eq "C")	{ $length = 64; }
 			elsif ($type =~ /^[TD]$/)	{ $length = 8; }
 			elsif ($type =~ /^[NF]$/)	{ $length = 8; }
-			}
+		}
 						# force correct lengths
 		if ($type =~ /^[MBGP]$/)	{ $length = 10; $decimal = 0; }
 		elsif ($type eq "L")	{ $length = 1; $decimal = 0; }
@@ -682,15 +706,19 @@ sub create
 		
 		$record_len += $length;
 		my $offset = $record_len;
-		if ($type eq "C")
-			{
+		if ($type eq "C") {
 			$decimal = int($length / 256);
 			$length %= 256;
-			}
+		}
 		$fieldspack .= pack 'a11a1VCCvCvCa7C', $name, $type, $offset,
 				$length, $decimal, 0, 0, 0, 0, '', 0;
-		if ($type eq 'M') { $version |= 0x80; }
+		if ($type eq 'M') {
+			$needmemo = 1;
+			if ($version != 0x30) {
+				$version |= 0x80;
+			}
 		}
+	}
 	$fieldspack .= "\x0d";
 
 	my $header = pack 'CCCCVvvvCCa12CCv', $version, 0, 0, 0, 0,
@@ -708,23 +736,27 @@ sub create
 	$tmp->update_last_change();
 	$tmp->close();
 
-	if ($version & 0x80)
-		{
+	if ($needmemo) {
 		require XBase::Memo;
 		my $dbtname = $options{'memofile'};
-		if (not defined $dbtname)
-			{
+		if (not defined $dbtname) {
 			$dbtname = $options{'name'};
-			$dbtname =~ s/\.DBF$/.DBT/ or $dbtname =~ s/(\.dbf)?$/.dbt/;
+			if ($version == 0x30 or $version == 0xf5) {
+				$dbtname =~ s/\.DBF$/.FPT/ or $dbtname =~ s/(\.dbf)?$/.fpt/;
+			} else {
+				$dbtname =~ s/\.DBF$/.DBT/ or $dbtname =~ s/(\.dbf)?$/.dbt/;
 			}
-		my $dbttmp = XBase::Memo->new();
-		$dbttmp->create('name' => $dbtname,
-			'version' => ($version & 15),
-			'dbf_filename' => $basename) or return;
 		}
+		my $dbttmp = XBase::Memo->new();
+		my $memoversion = ($version & 15);
+		$memoversion = 5 if $version == 0x30;
+		$dbttmp->create('name' => $dbtname,
+			'version' => $memoversion,
+			'dbf_filename' => $basename) or return;
+	}
 
 	return $class->new($options{'name'});
-	}
+}
 # Drop the table
 sub drop
 	{
@@ -1155,8 +1187,9 @@ the following B<fetch> will return all fields.
 The first parameter is the file name of the index file, the rest is
 as above. For index types that can hold more index structures in on
 file, use arrayref instead of the file name and in that array include
-file name and the tag name. The B<fetch> will then return records in
-the ascending order, according to the index.
+file name and the tag name, and optionaly the index type.
+The B<fetch> will then return records in the ascending order,
+according to the index.
 
 =back
 
@@ -1316,7 +1349,7 @@ Thanks a lot.
 
 =head1 VERSION
 
-0.162
+0.173
 
 =head1 AUTHOR
 
