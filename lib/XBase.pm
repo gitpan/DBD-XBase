@@ -20,7 +20,7 @@ use XBase::Base;		# will give us general methods
 use vars qw( $VERSION $errstr $CLEARNULLS @ISA );
 
 @ISA = qw( XBase::Base );
-$VERSION = '0.173';
+$VERSION = '0.177';
 $CLEARNULLS = 1;		# Cut off white spaces from ends of char fields
 
 *errstr = \$XBase::Base::errstr;
@@ -38,7 +38,7 @@ sub open
 	$self->{'openoptions'} = { %options, @_ };
 
 	my %locoptions;
-	@locoptions{ qw( name readonly ignorememo ) } = @{$self->{'openoptions'}}{ qw( name readonly ignorememo ) };
+	@locoptions{ qw( name readonly ignorememo fh ) } = @{$self->{'openoptions'}}{ qw( name readonly ignorememo fh ) };
 	my $filename = $locoptions{'name'};
 	if ($filename eq '-')
 		{ return $self->SUPER::open(%locoptions); }
@@ -149,7 +149,7 @@ sub read_header
 						$memo->read_record($value - 1) if defined $memo;
 						};
 					$wproc = sub {
-						my $value = $memo->write_record(-1, $type, $_[0]) if defined $memo and defined $_[0];
+						my $value = $memo->write_record(-1, $type, $_[0]) if defined $memo and defined $_[0] and $_[0] ne '';
 						sprintf '%*.*s', $length, $length,
 							(defined $value ? $value + 1: ''); };
 					}
@@ -216,6 +216,13 @@ sub read_header
 		push @$writeproc, $wproc;
 		$lastoffset += $length;
 		}
+
+	if ($lastoffset > $self->{'record_len'}
+		and not defined $self->{'openoptions'}{'nolongchars'}) {
+		$self->seek_to(0);
+		$self->{'openoptions'}{'nolongchars'} = 1;
+		return $self->read_header;
+	}
 
 	my $hashnames = {};		# create name-to-num_of_field hash
 	@{$hashnames}{ reverse @$names } = reverse ( 0 .. $#$names );
@@ -1349,7 +1356,7 @@ Thanks a lot.
 
 =head1 VERSION
 
-0.173
+0.177
 
 =head1 AUTHOR
 
