@@ -20,7 +20,7 @@ use XBase::Base;		# will give us general methods
 use vars qw( $VERSION $errstr $CLEARNULLS @ISA );
 
 @ISA = qw( XBase::Base );
-$VERSION = '0.130';
+$VERSION = '0.132';
 $CLEARNULLS = 1;		# Cut off white spaces from ends of char fields
 
 *errstr = \$XBase::Base::errstr;
@@ -141,7 +141,7 @@ sub read_header
 				else {
 					$rproc = sub {
 						my $value = shift;
-						return undef unless $value =~ /\d/;
+						return undef if not $value =~ /\d/ or $value < 0;
 						$memo->read_record($value - 1) if defined $memo;
 						};
 					$wproc = sub {
@@ -174,7 +174,7 @@ sub read_header
 				my $localday = $day - 2440588;
 				my $localtime = $localday * 24 * 3600;
 				$localtime += $time / 1000;
-print STDERR "day,time: ($day,$time -> $localtime)\n";
+### print STDERR "day,time: ($day,$time -> $localtime)\n";
 				return $localtime;
 
 				my $localdata = "[$localday] $localtime: @{[localtime($localtime)]}";
@@ -190,7 +190,7 @@ print STDERR "day,time: ($day,$time -> $localtime)\n";
 				my $day = int($localtime / (24 * 3600)) + 2440588;
 				my $time = int(($localtime % (3600 * 24)) * 1000);
 
-print STDERR "day,time: ($localtime -> $day,$time)\n";
+### print STDERR "day,time: ($localtime -> $day,$time)\n";
 
 				return pack 'VV', $day, $time;	
 				}
@@ -753,11 +753,17 @@ sub prepare_select_nf
 sub prepare_select_with_index
 	{
 	my ($self, $file) = ( shift, shift );
+	my @tagopts = ();
+	if (ref $file eq 'ARRAY') {             ### this is suboptimal
+					### interface but should suffice for now
+		@tagopts = ( 'tag' => $file->[1] );
+		$file = $file->[0];
+		}
 	my $fieldnames = [ @_ ];
 	if (not @_) { $fieldnames = [ $self->field_names ] };
 	my $fieldnums = [ map { $self->field_name_to_num($_); } @$fieldnames ];
 	require XBase::Index;
-	my $index = new XBase::Index $file or
+	my $index = new XBase::Index $file, 'dbf' => $self, @tagopts or
 		do { $self->Error(XBase->errstr); return; };
 	$index->prepare_select or
 		do { $self->Error($index->errstr); return; };
@@ -1207,7 +1213,7 @@ Thanks a lot.
 
 =head1 VERSION
 
-0.130
+0.132
 
 =head1 AUTHOR
 
