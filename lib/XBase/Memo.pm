@@ -12,7 +12,7 @@ use XBase::Base;
 
 use vars qw( $VERSION @ISA );
 @ISA = qw( XBase::Base );
-$VERSION = '0.100';
+$VERSION = '0.121';
 
 # Read header is called from open to fill the object structures
 sub read_header
@@ -52,11 +52,12 @@ sub read_header
 
 	$block_size = 512 if int($block_size) == 0;
 
+	$next_for_append = int ((((-s $self->{'filename'}) - 1) / $block_size) + 1);
+
 	@{$self}{ qw( next_for_append header_len record_len version ) }
 		= ( $next_for_append, $block_size, $block_size, $version );
 
 	$self->{'memosep'} = $options{'memosep'};
-	$self->{'memosep'} = "\x1a\x1a" if not defined $self->{'memosep'};
 
 	1;
 	}
@@ -70,13 +71,16 @@ sub write_record
 	$self->SUPER::write_record($num, @_);
 	if ($num < 0 or $num > $self->last_record())
 		{
-		$self->SUPER::write_to(0, pack "V", $num + $num_of_blocks);
-		$self->{'next_for_append'} = $num + $num_of_blocks;
+		my $packed = pack "V", $num + $num_of_blocks + 1;
+		if (ref $self eq 'XBase::Memo::Fox')
+			{ $packed = pack "N", $num + $num_of_blocks + 1; }
+		$self->SUPER::write_to(0, $packed);
+		$self->{'next_for_append'} = $num + $num_of_blocks + 1;
 		}
 	$num;
 	}
 
-sub last_record	{ shift->{'next_for_append'} - 1; }
+sub last_record	{ shift->{'next_for_append'} - 2; }
 
 sub create
 	{
@@ -108,6 +112,16 @@ sub read_record
 	my ($self, $num) = @_;
 	my $result = '';
 	my $last = $self->last_record();
+	if (not defined $self->{'memosep'}) {
+		$self->{'memosep'} = "\x1a\x1a";
+		if (not defined $self->read_record($last)) {
+			$self->{'memosep'} = "\x1a";
+			if (not defined $self->read_record($last)) {
+				$self->{'memosep'} = "\x1a\x1a";
+				}
+			}
+		}
+
 	while ($num <= $last)
 		{
 		my $buffer = $self->SUPER::read_record($num, -1) or return;
@@ -117,7 +131,7 @@ sub read_record
 		$result .= $buffer;
 		$num++;
 		}
-	return $result;
+	return;
 	}
 
 sub write_record
@@ -198,7 +212,8 @@ sub write_record
 		else			{ $startfield = pack 'N', 2; }
 		$startfield .= pack 'N', ($length - 8);
 		}
-	$data = $startfield . $data . "\x1a\x1a";
+	### $data = $startfield . $data . "\x1a\x1a";
+	$data = $startfield . $data;
 
 	if ($num >= 0 and $num <= $self->last_record())
 		{
@@ -219,6 +234,8 @@ sub write_record
 		}
 	else
 		{ $num = $self->last_record() + 1; }
+	my $fill = $self->{'record_len'} - (( length $data ) % $self->{'record_len'});
+	$data .= "\000" x $fill;
 	$self->SUPER::write_record($num, $data);
 	$num;
 	}
@@ -254,11 +271,11 @@ specify their specific B<read_record> and B<write_record> methods.
 
 =head1 VERSION
 
-0.100
+0.121
 
 =head1 AUTHOR
 
-(c) 1997--1998 Jan Pazdziora, adelton@fi.muni.cz
+(c) 1997--1999 Jan Pazdziora, adelton@fi.muni.cz
 
 =head1 SEE ALSO
 

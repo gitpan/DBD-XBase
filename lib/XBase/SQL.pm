@@ -8,7 +8,7 @@ package XBase::SQL;
 use strict;
 use vars qw( $VERSION %COMMANDS );
 
-$VERSION = '0.068';
+$VERSION = '0.110';
 
 # #################################
 # Type conversions for create table
@@ -57,16 +57,18 @@ my %TYPES = ( 'char' => 'C', 'varchar' => 'C',
 	'WHEREEXPR' =>	'BOOLEAN',
 
 	'BOOLEAN' =>	q'\( BOOLEAN \) | RELATION ( ( AND | OR ) BOOLEAN ) *',
-	'RELATION' =>	'EXPFIELDNAME ( RELOP ARITHMETIC | is not ? null )',
+	'RELATION' =>   'EXPFIELDNAME ( is not ? null | LIKE CONSTANT_NOT_NULL | RELOP ARITHMETIC )',
 	'EXPFIELDNAME' => 'FIELDNAME',
 	'AND' =>	'and',
 	'OR' =>		'or',
-	
+	'LIKE' =>	'not ? like',
+
 	'RELOP' => [ qw{ == | = | <= | >= | <> | != | < | > } ],
 	'ARITHMETIC' => [ qw{ \( ARITHMETIC \)
 		| ( CONSTANT | EXPFIELDNAME ) ( ( \+ | \- | \* | \/ | \% ) ARITHMETIC ) ? } ],
 	
-	'CONSTANT' => [ qw{ BINDPARAM | NULL | NUMBER | STRING } ],
+	'CONSTANT' => ' CONSTANT_NOT_NULL | NULL ',
+	'CONSTANT_NOT_NULL' => ' BINDPARAM | NUMBER | STRING ',
 	'BINDPARAM' => q'\?',
 	'NULL' => 'null',
 
@@ -123,11 +125,11 @@ my %ERRORS = (
 # ########################################
 # Simplifying conversions during the match
 my %SIMPLIFY = (
-	'STRINGDBL' => sub { join '', get_strings(@_); },
-	'STRINGSGL' => sub { join '', get_strings(@_); },
+	'STRINGDBL' => sub { join '', '"', get_strings(@_), '"'; },
+	'STRINGSGL' => sub { join '', '\'', get_strings(@_), '\''; },
 	'STRING' => sub { my $e = (get_strings(@_))[1];
 			## $e =~ s/([\\'])/\\$1/g;
-			"XBase::SQL::Expr->string('$e')"; },
+			"XBase::SQL::Expr->string($e)"; },
 	'NUMBER' => sub { my $e = (get_strings(@_))[0];
 				"XBase::SQL::Expr->number($e)"; },
 	'EXPFIELDNAME' => sub { my $e = (get_strings(@_))[0];
@@ -145,10 +147,13 @@ my %SIMPLIFY = (
 		my $testnull = join ' ', @values[1 .. 3];
 		if ($testnull =~ /^is (not )?null ?$/i)
 			{ return "not $1 defined(($values[0])->value)"; }
+		elsif ($values[1] =~ /^(not )?like$/i)
+			{ return "$1(XBase::SQL::Expr->likematch($values[0], $values[2])) " }
 		else { return join ' ', @values; }	},
 	'NULL' => 'XBase::SQL::Expr->null()',
 	'AND' =>	'and',
 	'OR' =>		'or',
+	'LIKE' =>	sub { join ' ', get_strings(@_); },
 	);
 #
 #
@@ -202,6 +207,7 @@ my %STORE = (
 	'TABLE' => 'table',
 
 	'WHEREEXPR' => sub { my ($self, $expr) = @_;
+		### print STDERR "Evalling: $expr\n";
 		my $fn = eval 'sub { my ($TABLE, $VALUES, $BIND, $startbind) = @_; ' . $expr . '; }';
 		if ($@) { $self->{'whereerror'} = $@; }
 		else { $self->{'wherefn'} = $fn; }
@@ -239,6 +245,8 @@ sub parse
 		# take the results and store them to $self
 		### use Data::Dumper; print STDERR Dumper @result;
 		$self->store_results(\@result, \%STORE);
+		if (defined $self->{'whereerror'})
+			{ $self->{'errstr'} = "Some deeper problem: eval failed: $self->{'whereerror'}"; }
 		### print STDERR Dumper $self;
 		}
 	$self;
@@ -452,13 +460,10 @@ use overload
 	'""' => sub { ref shift; },
 	;
 
-sub new
-	{ bless {}, shift; }
-sub value
-	{ shift->{'value'}; }
+sub new { bless {}, shift; }
+sub value { shift->{'value'}; }
 
-sub field
-	{
+sub field {
 	my ($class, $field, $table, $values) = @_;
 	my $self = $class->new;
 	$self->{'field'} = $field;
@@ -469,28 +474,24 @@ sub field
 	else			{ $self->{'string'} = 1; }
 	$self;
 	}
-sub string
-	{
+sub string {
 	my $self = shift->new;
 	$self->{'value'} = shift;
 	$self->{'string'} = 1;
 	$self;
 	}
-sub number
-	{
+sub number {
 	my $self = shift->new;
 	$self->{'value'} = shift;
 	$self->{'number'} = 1;
 	$self;
 	}
-sub null
-	{
+sub null {
 	my $self = shift->new;
 	$self->{'value'} = undef;
 	$self;
 	}
-sub other
-	{
+sub other {
 	my $class = shift;
 	my $other = shift;
 	$other;
@@ -530,6 +531,15 @@ sub notequal
 		{ ($self->value != $other->value); }
 	}
 
+sub likematch
+	{
+	my $class = shift;
+	my ($field, $string) = @_;
+
+	my $regexp = $string->value;
+	$regexp =~ s/(\\\\[%_]|.)/ ($1 eq '%') ? '.*' : ($1 eq '_') ? '.' : "\Q$1" /seg;
+	$field->value =~ /^$regexp$/i;
+	}
 
 1;
 

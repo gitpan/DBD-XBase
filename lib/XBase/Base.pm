@@ -9,27 +9,30 @@ package XBase::Base;
 
 use strict;
 use IO::File;
+use Fcntl qw( O_RDWR O_BINARY O_RDONLY );
+BEGIN {
+	eval { my $a = O_BINARY; };
+	if ($@) { local $^W = 0; eval ' sub O_BINARY { 0 } ' }
+	}
 
-use vars qw( $VERSION $DEBUG $errstr );
-
-$VERSION = '0.0632';
+$XBase::Base::VERSION = '0.120';
 
 # Sets the debug level
-$DEBUG = 0;
-sub DEBUG () { $DEBUG };
+$XBase::Base::DEBUG = 0;
+sub DEBUG () { $XBase::Base::DEBUG };
 
 my $SEEK_VIA_READ = 0;
 
 # Holds the text of the global error, if there was one
-$errstr = '';
+$XBase::Base::errstr = '';
 # Fetch the error message
-sub errstr ()	{ ( ref $_[0] ? $_[0]->{'errstr'} : $errstr ); }
+sub errstr ()	{ ( ref $_[0] ? $_[0]->{'errstr'} : $XBase::Base::errstr ); }
 
 # Set errstr and print error on STDERR if there is debug level
 sub Error (@)
 	{
 	my $self = shift;
-	( ref $self ? $self->{'errstr'} : $errstr ) = join '', @_;
+	( ref $self ? $self->{'errstr'} : $XBase::Base::errstr ) = join '', @_;
 	}
 # Null the errstr
 sub NullError
@@ -49,13 +52,17 @@ sub new
 sub open
 	{
 	__PACKAGE__->NullError();
-	my ($self, $filename) = (shift, shift);
+	my $self = shift;
+	my %options;
+	if (scalar(@_) % 2) { $options{'name'} = shift; }
+		$self->{'openoptions'} = { %options, @_ };
+	%options = (%options, @_);
 	if (defined $self->{'fh'}) { $self->close(); }
 
 	my $fh = new IO::File;
 	my $rw;
 	
-	if ($filename eq '-')
+	if ($options{'name'} eq '-')
 		{
 		$fh->fdopen(fileno(STDIN), 'r');
 		$self->{'stream'} = 1;
@@ -64,16 +71,26 @@ sub open
 		}
 	else
 		{
-		if ($fh->open($filename, 'r+'))		{ $rw = 1; }
-		elsif ($fh->open($filename, 'r'))	{ $rw = 0; }
-		else { __PACKAGE__->Error("Error opening file $filename: $!\n"); return; }
+		my $ok = 1;
+		if (not $options{'readonly'}) {
+			if ($fh->open($options{'name'}, O_RDWR|O_BINARY))
+				{ $rw = 1; }
+			else	{ $ok = 0; }
+			}
+		if (not $ok) {
+			if ($fh->open($options{'name'}, O_RDONLY|O_BINARY))
+				{ $rw = 0; }
+			else    { $ok = 0; }
+			}
+		if (not $ok) {
+			__PACKAGE__->Error("Error opening file $options{'name'}: $!\n"); return; }
 		}
 
 	$self->{'tell'} = 0 if $SEEK_VIA_READ;
 	$fh->autoflush();
 
 	binmode($fh);
-	@{$self}{ qw( fh filename rw ) } = ($fh, $filename, $rw);
+	@{$self}{ qw( fh filename rw ) } = ($fh, $options{'name'}, $rw);
 	## $self->locksh();
 
 		# read_header should be defined in the derived class
@@ -345,11 +362,11 @@ No more description -- check the source code if you need to know more.
 
 =head1 VERSION
 
-0.0632
+0.120
 
 =head1 AUTHOR
 
-(c) 1997--1998 Jan Pazdziora, adelton@fi.muni.cz
+(c) 1997--1999 Jan Pazdziora, adelton@fi.muni.cz
 
 =head1 SEE ALSO
 
