@@ -1,6 +1,30 @@
 
 Revision history for Perl extension XBase and DBD::Xbase.
 
+0.0345 Mon Dec  8 13:02:46 MET 1997
+
+	Fixed bug with "\0" at the end of field names in header,
+	spotted by Roberto Congiu.
+
+0.0343 Thu Dec  4 10:52:41 MET 1997
+
+	Column names are converted to uppercase. SQL parsing moved to
+	XBase::SQL module -- not ready yet. Added require XBase::Memo
+	when creating new Memo file. Added test for create and drop.
+	
+0.0342 Fri Nov 28 18:30:31 MET 1997
+
+	Fixed bug when creating new file, spotted by Roberto Congiu.
+	$XBase::errstr depreciated, using XBase->errstr instead. Minor
+	changes in the documentation.
+
+0.03301 Thu Nov 20 17:32:53 MET 1997
+
+	Handling null numeric fields (John D Groenveld). Changed
+	"look for error" test in header.t to be OS portable. Fixed bug
+	in decode_version_info (dbtflag). Fixed bug with field length
+	in XBase::create, spotted by Risto Wichman.
+
 0.032 Thu Nov  6 16:27:10 MET 1997
 
 	Fixed bugs: test on "\r" in read_header; check of record

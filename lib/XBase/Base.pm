@@ -76,7 +76,7 @@ in the file.
 
 =head1 VERSION
 
-0.03
+0.034
 
 =head1 AUTHOR
 
@@ -105,7 +105,7 @@ use Exporter;
 # ##############
 # General things
 
-$VERSION = "0.03";
+$VERSION = "0.034";
 
 # Sets the debug level
 $DEBUG = 0;
@@ -165,6 +165,7 @@ sub open
 
 	my $fh = new IO::File;
 	my ($filename, $writable, $mode) = ($self->{'filename'}, 0, 'r');
+
 	($writable, $mode) = (1, 'r+') if -w $filename;
 				# decide if we want r or r/w access
 
@@ -196,6 +197,21 @@ sub close
 	delete @{$self}{'opened', 'fh'};
 	1;
 	}
+# Drop (unlink) the file
+sub drop
+	{
+	NullError();
+	my $self = shift;
+	my $filename = $self;
+	if (ref $self)
+		{
+		$filename = $self->{'filename'};
+		$self->close() if ($self->{'opened'});
+		}
+	unlink $filename or
+		do { Error "Error unlinking file $filename: $!\n"; return; };
+	1;	
+	}
 # Create new file
 sub create_file
 	{
@@ -204,6 +220,11 @@ sub create_file
 	if (not defined $name)
 		{
 		Error "Name has to be specified when creating new table\n";
+		return;
+		}
+	if (-f $name)
+		{
+		Error "File '$name' already exists\n";
 		return;
 		}
 	my $fh = new IO::File;

@@ -12,7 +12,7 @@ use XBase;
 $::XBaseloaded = 1;
 print "ok 1\n";
 
-my $dir = ( -d "t" ? "t" : "" );
+my $dir = ( -d "t" ? "t" : "." );
 
 $XBase::Base::DEBUG = 1;        # We want to see any problems
 $XBase::CLEARNULLS = 1;         # Yes, we want that
@@ -62,9 +62,9 @@ print "ok 7\n";
 
 
 print "Check the returned error message\n";
-print "Got errstr: $XBase::errstr";
-print "not " if $XBase::errstr ne
-	"Error opening file nonexistent.dbf: No such file or directory\n";
+my $errstr = XBase->errstr();
+print "Got errstr: $errstr";
+print "not " if not $errstr =~ /^Error opening file nonexistent.dbf:/;
 print "ok 8\n";
 
 

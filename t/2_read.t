@@ -12,7 +12,7 @@ use XBase;
 $::XBaseloaded = 1;
 print "ok 1\n";
 
-my $dir = ( -d "t" ? "t" : "" );
+my $dir = ( -d "t" ? "t" : "." );
 
 $XBase::Base::DEBUG = 1;	# We want to see any problems
 $XBase::CLEARNULLS = 1;		# Yes, we want that
@@ -59,7 +59,7 @@ print "ok 7\n";
 
 
 
-print "Get record as hash\n";
+print "Get record 0 as hash\n";
 
 my %hash = $table->get_record_as_hash(0);
 
@@ -67,6 +67,8 @@ my @keys = keys %hash;
 my @values = map { defined $_ ? qq["$_"] : "undef" } values %hash;
 
 print "Got \@hash{ qw( @keys ) } = (", join(", ", @values), ");\n";
+
+print "Now check values ID, _DELETED, BOOLEAN\n";
 
 my $id = $hash{'ID'};
 print "not " if not defined $id or $id != 1;
@@ -79,8 +81,6 @@ print "ok 9\n";
 my $boolean = $hash{'BOOLEAN'};
 print "not " if defined $boolean;
 print "ok 10\n";
-
-
 
 1;
 

@@ -6,7 +6,7 @@ XBase - Perl module for reading and writing the dbf files
 =head1 SYNOPSIS
 
 	use XBase;
-	my $table = new XBase("dbase.dbf");
+	my $table = new XBase("dbase.dbf") or die XBase->errstr();
 	for (0 .. $table->last_record())
 		{
 		my ($deleted, $id, $msg)
@@ -17,16 +17,12 @@ XBase - Perl module for reading and writing the dbf files
 =head1 DESCRIPTION
 
 This module can read and write XBase database file, known as dbf in
-dBase and FoxPro world. It also reads memo (and the like) fields from
-the dbt files, if needed. This module should really be used via
-DBD::XBase DBI driver, but this is the alternative interface.
-Note for now: no real DBD:: support currently exists.
+dBase and FoxPro world. It also reads memo fields from the dbt files,
+if needed. Module XBase provides simple native interface to XBase
+files and you can also use the DBD::XBase DBI driver (is not complete
+yet).
 
-Remember: Since the version number is pretty low now, you might want
-to check the CHANGES file any time you upgrade to see wheather some of
-the features you use haven't disappeared.
-
-WARNING for now: It doesn't support any index files at the present
+B<Warning> for now: It doesn't support any index files at the present
 time! That means if you change your dbf, your idx&mdx (if you have
 any) will not match. So do not do that.
 
@@ -38,8 +34,10 @@ The following methods are supported:
 
 =item new
 
-Creates the XBase object, takes the file's name as argument, parses
-the file's header, fills the data structures.
+Creates the XBase object, the argument gives the dbf file (table in
+fact) name. A suffix .dbf will be appended if needed. This method
+creates a new object and reads the file header. It will also read
+appropriate memo file if there is a memo field in dbf.
 
 =item close
 
@@ -47,33 +45,47 @@ Closes the object/file.
 
 =item create
 
-Creates new database file. Expects class name and hash of options,
-containing at least B<name> and references to lists B<field_names>,
-B<field_types>, B<field_lengths> and B<field_decimals>.
+Creates new database file on disk and initializes it with 0 records.
+A dbt (memo) file will be also created if the table contains some memo
+field. Arguments to create are passed as hash.
 
-You can also pass reference to XBase object instead of class name (and
-then can omit the other field_* attributes) and the new table will
-have the same structure (fields) as the original object.
+You can call this method as method of another XBase object and then
+you only need to pass B<name> value of the hash; the structure
+(fields) of the new file will be the same as of the original object.
 
-BUG: currently will not create .dbt file for you.
+If you call create using class name (XBase), you have to (besides
+B<name>) also specify another four values, each being a reference
+to list: B<field_names>, B<field_types>, B<field_lengths> and
+B<field_decimals>. The field types are specified by one letter
+strings. If you set certain value (except field name) as undefined,
+create will make it into some reasonable default.
+
+The new file mustn't exist yet -- XBase will not allow you to
+overwrite existing table. Use B<drop> to delete them first (or unlink).
+
+=item drop
+
+This method closes the table and deletes it on disk (including dbt
+file, if there is any).
 
 =item last_record
 
-Number of the last record in the file. The lines deleted but present
-in the file are included in this number.
+Returns number of the last record in the file. The lines deleted but
+present in the file are included in this number.
 
 =item last_field
 
-Number of the last field in the file, number of fields minus 1.
+Returns number of the last field in the file, number of fields minus 1.
 
 =item field_names, field_types, field_lengths, field_decimals
 
-List of field names and so for the dbf file.
+Return list of field names and so on for the dbf file.
 
 =back
 
-When dealing with the records, you always have to specify the number
-of the record in the file. The range is 0 .. $table->last_record().
+When dealing with the records, reading or writing, you always have
+to specify the number of the record in the file. The range is
+0 .. $table->last_record().
 
 =head2 Reading the data
 
@@ -81,18 +93,20 @@ of the record in the file. The range is 0 .. $table->last_record().
 
 =item get_record
 
-Returns a list of data from the specified record (line of the table).
-The first argument is the number of the record. If there are any other
-arguments, they are considered to be the names of the fields and only
-the specified fields are returned. If no field names are present,
-returns all fields in the record. The first value of the returned list
-is the 1/0 value saying if the record is deleted or not.
+Returns a list of data (field values) from the specified record (line
+of the table). The first argument in the call is the number of the
+record. If you do not specify any other argument, all fields are
+returned. You can also put list of field names after the record number
+and then only those will be returned. The first value of the returned
+list is the 1/0 _DELETED value saying if the record is deleted or not,
+so on success, get_record will never return empty list.
 
 =item get_record_as_hash
 
-Returns hash (in list context) or reference to hash (scalar), where
-keys are the field names of the record and values the values. The
-deleted flag has name _DELETED.
+Returns hash (in list context) or reference to hash (in scalar
+context) containing field values indexed by field names. The deleted
+flag has name _DELETED. The only argument in the call is the record
+number.
 
 =back
 
@@ -109,8 +123,8 @@ is undeleted.
 
 =item set_record_hash
 
-Takes number of the record and hash, sets the fields, unspecified are
-undeffed/emptied. The record is undeleted.
+Takes number of the record and hash as arguments, sets the fields,
+unspecified are undeffed/emptied. The record is undeleted.
 
 =item update_record_hash
 
@@ -123,17 +137,19 @@ Deletes/undeletes the record.
 
 =back
 
+The set and update methods return the record number actually written,
+number 0 is returned as true.
+
 =head2 Errors and debugging
 
 If the method fails (returns undef of null list), the error message
-can be retrieved via B<errstr> method. If the B<new> method fails, you
-have no object and so B<new> (and only B<new>) puts the error message
-into the $XBase::errstr variable.
+can be retrieved via B<errstr> method. If the B<new> or B<create>
+method fails, you have no object so you get the error message using
+class syntax XBase->errstr().
 
-The methods B<get_header_info> and B<dump_records> can be used to
-quickly view the content of the file, at least for now. Please speak
-up if you like them and want them to be supported. They are here
-mainly for my debugging purposes.
+The methods B<get_header_info> returns (not prints) information about
+the file and about the fields, B<dump_records> prints all records from
+the file, one on a line, fields separated by commas.
 
 Module XBase::Base(3) defines some basic functionality and also following
 variables, that affect the internal behaviour:
@@ -151,21 +167,20 @@ When reading the file, try to continue, even if there is some
 
 =back
 
-In the module XBase there is variable $CLEARNULLS which if true, will
-make the reading methods cuts off spaces and nulls from the end of
-character fields on read.
+In the module XBase there is variable $CLEARNULLS that specifies,
+whether will the reading methods cuts off spaces and nulls from the
+end of fixed character fields on read. The default is true.
 
 =head1 LITTLE EXAMPLE
 
 This is a code to update field MSG in record where ID is 123.
 
 	use XBase;
-	my $table = new XBase("test.dbf");
-	die $XBase::errstr unless defined $table;
+	my $table = new XBase("test.dbf") or die XBase->errstr();
 	for (0 .. $table->last_record())
 		{
 		my ($deleted, $id)
-			= $table->get_record($_, "ID");
+			= $table->get_record($_, "ID")
 		die $table->errstr unless defined $deleted;
 		next if $deleted;
 		if ($id == 123)
@@ -183,25 +198,16 @@ file with the same name but extension .dbt. It uses module
 XBase::Memo(3) for this. It reads and writes this memo field
 transparently (ie you do not know about it).
 
-Quiz question: can there be more than one memo field in the dbf file?
-In what file (.dbt?) should I search for their values? Any ideas?
-
 No index files are currently supported. Two reasons: you do not need
 them when reading the file because you specify the record number
 anyway and writing them is extremely difficult. I will try to add the
 support but do not promise anything ;-) There are too many too complex
 questions: how about compound indexes? Which index formats should
 I support? What files contain the index data? I do not have dBase nor
-Fox* so do not have data to experiment. Send me anything that might
-help.
+Fox* so do not have data to experiment.
 
-Any ideas, suggestions, URLs, help or code? Please write me, I am
-writing this module for you.
-
-=head1 INTERFACE
-
-Would you like different interface in the module? Write me, we shall
-figure something out.
+Please send me examples of your data files and suggestions for
+interface.
 
 =head1 HISTORY
 
@@ -215,19 +221,18 @@ package, but the interface seemed rather complicated to me and I also
 disliked the licence Pratap had about the module.
 
 So with the help of article XBase File Format Description by Erik
-Bachmann, URL http://www.geocities.com/SiliconValley/Pines/2563/xbase.htm,
+Bachmann on URL http://www.geocities.com/SiliconValley/Pines/2563/xbase.htm
 I have written a new module. It doesn't use any code from Xbase-1.07
 and you are free to use and distribute it under the same terms as Perl
 itself.
 
-Please send all bug reports CC'ed to my e-mail, since I might miss
+Please send all bug reports cc'ed to my e-mail, since I might miss
 your post in c.l.p.misc or dbi-users (or other groups). Any comments
-from both Perl and XBase gurus are welcome, since I do neither use
-dBase nor Fox*, so there are probably pieces missing.
+both about the Perl and XBase are welcome.
 
 =head1 VERSION
 
-0.032
+0.0345
 
 =head1 AUTHOR
 
@@ -235,16 +240,12 @@ dBase nor Fox*, so there are probably pieces missing.
 
 =head1 SEE ALSO
 
-perl(1); DBD::XBase(3) and DBI(3) for DBI interface;
-XBase::Base(3) and DBD::Memo(3) for internal details
+perl(1); DBD::XBase(3) and DBI(3) for DBI interface
 
 =cut
 
 # ########
-use 5.004;	# Hmm, maybe it would work with 5.00293 or so, but I do
-		# not have it, so this is more like a note, on which
-		# version the module has been tested
-
+use 5.004;	# Yes, 5.004 and everything should be fine
 
 # #############################
 # Here starts the XBase package
@@ -262,9 +263,9 @@ use vars qw( $VERSION $errstr $CLEARNULLS @ISA );
 
 @ISA = qw( XBase::Base );
 
-$VERSION = "0.032";
+$VERSION = "0.0345";
 
-$errstr = '';	# only after new, otherwise use method $table->errstr;
+$errstr = "Use of \$XBase::errstr is depreciated, please use XBase->errstr() instead\n";
 
 # If set, will cut off the spaces and nulls from ends of character fields
 $CLEARNULLS = 1;
@@ -278,10 +279,25 @@ sub new
 	{
 	my $class = shift;
 	my $result = $class->SUPER::new(@_);
-	$errstr = $XBase::Base::errstr unless $result;
+	###
+	### depreciated
+	### $errstr = $XBase::Base::errstr unless $result;
+	###
 	$result;
 	}
-
+sub open
+	{
+	my $self = shift;
+	if (not defined $self->{'opened'} or not $self->{'opened'})
+		{
+		if (@_ and not defined $self->{'filename'})
+			{ $self->{'filename'} = shift; }
+		my $filename = $self->{'filename'};
+		if ((not -f $filename) and $filename !~ /\.dbf$/i)
+			{ $self->{'filename'} = $filename . '.dbf'; }
+		}
+	$self->SUPER::open(@_);
+	}
 # We have to provide way to fill up the object upon open
 sub read_header
 	{
@@ -318,7 +334,9 @@ sub read_header
 			$multiuser1, $work_area, $multiuser2,
 			$set_fields_flag, $res, $index_flag)
 				= unpack "A11aVCCa2Ca2Ca7C", $field_def;
-		
+	
+		$name = uc $name;
+
 		if ($type eq "C")
 			{ $length += 256 * $decimal; $decimal = 0; }
 				# fixup for char length > 256
@@ -353,18 +371,17 @@ sub init_memo_field
 	{
 	my $self = shift;
 	return $self->{'memo'} if defined $self->{'memo'};
-	my $filename = $self->{'filename'};
-	$filename =~ s/\.dbf//i;
-	$filename .= '.dbt';
-	require 'XBase/Memo.pm';
-	return XBase::Memo->new($filename);
+	my $dbtname = $self->{'filename'};
+	$dbtname =~ s/(\.dbf)?$/.dbt/i;
+	require XBase::Memo;
+	return XBase::Memo->new($dbtname);
 	}
 
 sub close
 	{
 	my $self = shift;
 	if (defined $self->{'memo'})
-		{ $self->{'memo'}->close(); }
+		{ $self->{'memo'}->close(); delete $self->{'memo'}; }
 	$self->SUPER::close();
 	}
 
@@ -435,6 +452,7 @@ sub dump_records
 	for $num (0 .. $self->last_record())
 		{ print join(':', map { defined $_ ? $_ : ''; }
 				$self->get_record($num, @_)), "\n"; }
+	1;
 	}
 sub decode_version_info
 	{
@@ -445,7 +463,7 @@ sub decode_version_info
 	elsif ($version == 0x83)	{ $vbits = 3; $memo = 0; $dbtflag = 1;}
 	else {
 		$vbits = $version & 0x07;
-		$dbtflag = ($version >> 8) & 1;
+		$dbtflag = ($version >> 7) & 1;
 		$memo = ($version >> 3) & 1;
 		$sqltable = ($version >> 4) & 0x07;
 		}
@@ -538,6 +556,7 @@ sub process_list_on_read
 			}
 		elsif ($type eq 'N' or $type eq 'F')
 			{
+			next unless $value =~ /\d/;
 			my $len = $self->{'field_lengths'}[$num - 1];
 			my $dec = $self->{'field_decimals'}[$num - 1];
 			if ($dec)
@@ -548,9 +567,8 @@ sub process_list_on_read
 			}
 		elsif ($type =~ /^[MGBP]$/)
 			{
-			$data[$num] = $self->{'memo'}->read_record($value)
-				if defined $self->{'memo'} and
-					not $value =~ /^ +$/;
+			if (defined $self->{'memo'} and $value !~ /^ +$/)
+				{ $data[$num] = $self->{'memo'}->read_record($value); }
 			}
 		else
 			{ $data[$num] = $value;	}
@@ -571,6 +589,7 @@ sub set_record
 	my @data = $self->process_list_on_write($num, @_,
 				(undef) x ($self->last_field - $#_));
 	$self->write_record($num, " ", @data);
+	$num = "0E0" unless $num;
 	$num;
 	}
 
@@ -736,10 +755,10 @@ sub create
 	{
 	NullError();
 	my $class = shift;
-	my %options = ();
+	my %options = @_;
 	if (ref $class)
-		{ %options = ( %$class, @_ ); $class = ref $class; }
-		
+		{ %options = ( %$class, %options ); $class = ref $class; }
+
 	my $version = $options{'version'};
 	$version = 3 unless defined $version;
 
@@ -760,29 +779,33 @@ sub create
 	my $i;
 	for $i (0 .. $#{$options{'field_names'}})
 		{
-		my $name = $options{'field_names'}[$i];
+		my $name = uc $options{'field_names'}[$i];
 		$name = "FIELD$i" unless defined $name;
+		$name .= "\0";
 		my $type = $options{'field_types'}[$i];
 		$type = "C" unless defined $type;
+
 		my $length = $options{'field_lengths'}[$i];
-		if (not defined $length)
+		my $decimal = $options{'field_decimals'}[$i];
+
+		if (not defined $length)		# defaults
 			{
 			if ($type eq "C")	{ $length = 64; }
 			elsif ($type eq "D")	{ $length = 8; }
 			elsif ($type =~ /^[NF]$/)	{ $length = 8; }
-			elsif ($type =~ /^[MBGP]$/)	{ $length = 10; }
-			elsif ($type eq "L")	{ $length = 1; }
 			}
-		my $decimal = $options{'field_decimals'}[$i];
+						# force correct lengths
+		if ($type =~ /^[MBGP]$/)	{ $length = 10; $decimal = 0; }
+		elsif ($type eq "L")	{ $length = 1; $decimal = 0; }
+
 		if (not defined $decimal)
-			{
-			$decimal = 0;
-			}
+			{ $decimal = 0; }
+		
 		$record_len += $length;
 		if ($type eq "C")
 			{
-			$decimal = $length % 256;
-			$length = int($length / 256);
+			$decimal = int($length / 256);
+			$length %= 256;
 			}
 		$header .= pack "A11A1VCCvCvCA7C", $name, $type, 0,
 				$length, $decimal, 0, 0, 0, 0, "", 0;
@@ -792,12 +815,37 @@ sub create
 	substr($header, 8, 4) = pack "vv", (length $header), $record_len;
 
 	my $tmp = $class->new();
-	$tmp->create_file($options{'name'}, 0700) or return;
+	my $newname = $options{'name'};
+	if (defined $newname and $newname !~ /\.dbf$/) { $newname .= ".dbf"; }
+	$tmp->create_file($newname, 0700) or return;
 	$tmp->write_to(0, $header) or return;
 	$tmp->update_last_change();
 	$tmp->close();
 
+	if (grep { /^[MBGP]$/ } @{$options{'field_types'}})
+		{
+		require XBase::Memo;
+		my $dbtname = $options{'name'};
+		$dbtname =~ s/(\.dbf)?$/.dbt/i;
+		my $dbttmp = XBase::Memo->new();
+		$dbttmp->create('name' => $dbtname,
+			'version' => $options{'version'}) or return;
+		}
+
 	return $class->new($options{'name'});
+	}
+# Drop the table
+sub drop
+	{
+	my $self = shift;
+	my $filename = $self;
+	if (ref $self)
+		{
+		if (defined $self->{'memo'})
+			{ $self->{'memo'}->drop(); }
+		return $self->SUPER::drop();
+		}
+	XBase::Base::drop($filename);
 	}
 
 1;
