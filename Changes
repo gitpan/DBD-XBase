@@ -1,5 +1,10 @@
 
-Revision history for Perl extension XBase and DBD::Xbase.
+Revision history for Perl extension XBase and DBD::XBase.
+
+0.210 Fri Dec  7 12:56:37 MET 2001
+	README and INSTALL made uptodate.
+	Fixed attributes (TYPE) handling, problem reported by Jacek
+	Ciolek.
 
 0.200 Sun Aug 19 13:48:27 MET DST 2001
 	Source code reformated to unified indentation.
