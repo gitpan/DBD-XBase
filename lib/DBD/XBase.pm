@@ -19,7 +19,7 @@ use Exporter;
 use vars qw( $VERSION @ISA @EXPORT $err $errstr $drh $sqlstate );
 			# a couple of global variables that may come handy
 
-$VERSION = '0.220';
+$VERSION = '0.230';
 
 $err = 0;
 $errstr = '';
@@ -171,9 +171,9 @@ sub rollback {
 # Upon disconnecting we close all tables
 sub disconnect {
 	my $dbh = shift;
-	foreach my $xbase (values %{$dbh->{'xbase_tables'}}) {
-		$xbase->close;
-		delete $dbh->{'xbase_tables'}{$xbase};
+	foreach my $table (keys %{$dbh->{'xbase_tables'}}) {
+		$dbh->{'xbase_tables'}->{$table}->close;
+		delete $dbh->{'xbase_tables'}{$table};
 	}
 	1;
 }
@@ -503,7 +503,7 @@ sub execute {
 							. $xbase->errstr);
 			return;
 		};
-		delete $dbh->{'xbase_tables'}{$xbase};
+		delete $dbh->{'xbase_tables'}{$table};
 		$rows = -1;
 	}
 	
@@ -750,9 +750,21 @@ Example:
 
     drop table passwd
 
+=head1 ATTRIBUTES
+
+Besides standard DBI attribudes, DBD::XBase supports database handle
+attribute xbase_ignorememo:
+
+	$dbh->{'xbase_ignorememo'} = 1;
+
+Setting it to 1 will cause subsequent tables to be opened while
+ignoring the memo files (dbt, fpt). So you can read dbf files for
+which you don't have (you have lost them, for example) the memo files.
+The memo fields will come out as nulls.
+
 =head1 VERSION
 
-0.220
+0.230
 
 =head1 AUTHOR
 
