@@ -1,3 +1,4 @@
+# #######################################################
 
 =head1 NAME
 
@@ -5,14 +6,10 @@ XBase - Perl module for reading and writing the dbf files
 
 =cut
 
-# ########
-use 5.004;		# Yes, 5.004 and everything should be fine
-
-# #############################
-# Here starts the XBase package
-
+# ############
 package XBase;
 
+use 5.004;		# Yes, 5.004 and everything should be fine
 use strict;
 use XBase::Base;	# will give us general methods
 
@@ -22,120 +19,154 @@ use XBase::Base;	# will give us general methods
 use vars qw( $VERSION $errstr $CLEARNULLS @ISA );
 
 @ISA = qw( XBase::Base );
+$VERSION = 0.0599;
+$CLEARNULLS = 1;		# Cut off white spaces from ends of char fields
 
-$VERSION = '0.0584';
+*errstr = \$XBase::Base::errstr;
 
-$errstr = "Use of \$XBase::errstr is depreciated, please use XBase->errstr() instead\n";
 
-# If set, will cut off the spaces and nulls from ends of character fields
-$CLEARNULLS = 1;
+# #########################################
+# Open, read_header, init_memo_field, close
 
-# ########################
-# Constructor, open, close
-
-# Open the specified file or try to append .dbf suffix.
+# Open the specified file or try to append the .dbf suffix.
 sub open
 	{
-	my $self = shift;
-	if (@_ and not -f $_[0])
+	my ($self) = shift;
+	my %options;
+	if (scalar(@_) % 2) { $options{'filename'} = shift; }	
+	$self->{'openoptions'} = { %options, @_ };
+	my $filename = $self->{'openoptions'}{'filename'};
+	for my $ext ('', '.dbf', '.DBF')
 		{
-		my $filename = shift;
-		if (-f ($filename . '.dbf'))
-			{ $filename .= '.dbf'; }
-		elsif (-f ($filename . '.DBF'))
-			{ $filename .= '.DBF'; }
-		unshift @_, $filename;
+		if (-f $filename.$ext)
+			{
+			$self->NullError();
+			return $self->SUPER::open($filename.$ext);
+			}
 		}
-	$self->SUPER::open(@_);
+	return $self->SUPER::open($filename);
 	}
 # We have to provide way to fill up the object upon open
 sub read_header
 	{
 	my $self = shift;
-	my ($filename, $fh) = @{$self}{ qw( filename fh ) };
+	my $fh = $self->{'fh'};
 
-	my $header;		# read the header
+	my $header;				# read the header
 	$fh->read($header, 32) == 32 or do
-		{ Error "Error reading header of $filename\n"; return; };
+		{ __PACKAGE__->Error("Error reading header of $self->{'filename'}: $!\n"); return; };
 
-	my ($version, $last_update, $num_rec, $header_len, $record_len,
-		$res1, $incompl_trans, $enc_flag, $rec_thread,
-		$multiuser, $mdx_flag, $language_dr, $res2)
-		= unpack 'Ca3Vvva2CCVa8CCa2', $header;
-				# parse the data
+	@{$self}{ qw( version last_update num_rec header_len record_len ) }
+		= unpack 'Ca3Vvv', $header;	# parse the data
+	my $header_len = $self->{'header_len'};
 
 	my ($names, $types, $lengths, $decimals) = ( [], [], [], [] );
-
-				# will read the field descriptions
-	while (tell($fh) < $header_len - 1)
+	my ($unpacks, $readproc, $writeproc) = ( [], [], [] );
+	my $lastoffset = 1;
+	
+	while (tell($fh) < $header_len - 1)	# read the field desc's
 		{
-		my $field_def;	# read the field description
-		$fh->read($field_def, 32) == 32 or do
-			{
-			Warning "Error reading field description\n";
-			last if FIXPROBLEMS;
-			return;
-			};
-
+		my $field_def;
+		my $read = $fh->read($field_def, 32);
 		last if substr($field_def, 0, 1) eq "\r";
-				# we have found the terminator
+						# we have found the terminator
+		
+		if ($read != 32)	
+			{ __PACKAGE__->Error("Error reading field description: $!\n"); return; };
 
-		my ($name, $type, $address, $length, $decimal,
-			$multiuser1, $work_area, $multiuser2,
-			$set_fields_flag, $res, $index_flag)
-				= unpack 'A11aVCCa2Ca2Ca7C', $field_def;
+		my ($name, $type, $length, $decimal)
+			= unpack 'A11a1 @16CC', $field_def;
+		my ($rproc, $wproc);
+
+		if ($type eq 'C')		# char
+			{
+			# fixup for char length > 256
+			$length += 256 * $decimal; $decimal = 0;
+			$rproc = sub { my $value = shift;
+				$value =~ s/\s+$// if $CLEARNULLS; $value; };
+			$wproc = sub { my $value = shift;
+				sprintf '%-*.*s', $length, $length,
+					(defined $value ? $value : ''); };
+			}
+		elsif ($type eq 'L')		# logical (boolean)
+			{
+			$rproc = sub { my $value = shift;
+				if ($value =~ /^[YyTt]$/) { return 1; }
+				if ($value =~ /^[NnFf]$/) { return 0; }
+				undef; };
+			$wproc = sub { my $value = shift;
+				sprintf '%-*.*s', $length, $length,
+					(defined $value ? ( $value ? 'Y' : 'N') : '? '); };
+			}
+		elsif ($type =~ /^[NFD]$/)	# numbers, dates
+			{
+			$rproc = sub { my $value = shift;
+				($value =~ /\d/) ? $value + 0 : undef; };
+			$wproc = sub { sprintf '%*.*f',
+					$length, $decimal, (shift() + 0); };
+			}
+		elsif ($type =~ /^[MGBP]$/)	# memo fields
+			{
+			my $memo = $self->{'memo'};
+			$memo = $self->{'memo'} = $self->init_memo_field()
+							unless defined $memo;
+			$rproc = sub {
+				my $value = shift;
+				return undef unless $value =~ /\d/;
+				$memo->read_record($value) if defined $memo;
+				};
+			$wproc = sub {
+				my $value = $memo->write_record(-1, $type, shift) if defined $memo;
+				sprintf '%*.*s', $length, $length,
+					(defined $value ? $value : ''); };
+			}
 
 		$name =~ s/[\000 ].*$//s;
-		$name = uc $name;
-
-		if ($type eq "C")
-			{ $length += 256 * $decimal; $decimal = 0; }
-				# fixup for char length > 256
-
+		$name = uc $name;		# no locale yet
 		push @$names, $name;
 		push @$types, $type;
 		push @$lengths, $length;
 		push @$decimals, $decimal;
-		}		# store the information
+		push @$unpacks, '@' . $lastoffset . 'a' .  $length;
+		push @$readproc, $rproc;
+		push @$writeproc, $wproc;
+		$lastoffset += $length;
+		}
 
-	my $hashnames;		# create name-to-num_of_field hash
+	my $hashnames = {};		# create name-to-num_of_field hash
 	@{$hashnames}{ reverse @$names } = reverse ( 0 .. $#$names );
 
-	my $template = join "", "a1",
-		map { "a" . $lengths->[$_]; } (0 .. $#$names);
-	
 			# now it's the time to store the values to the object
-	@{$self}{ qw( version last_update num_rec header_len record_len
-		field_names field_types field_lengths field_decimals
-		hash_names unpack_template last_field ) } =
-			( $version, $last_update, $num_rec, $header_len,
-			$record_len, $names, $types, $lengths, $decimals,
-			$hashnames, $template, $#$names );
-
-	if (grep { /^[MGBP]$/ } @$types)
-		{ $self->{'memo'} = $self->init_memo_field(); }
+	@{$self}{ qw( field_names field_types field_lengths field_decimals
+		hash_names last_field field_unpacks
+		field_rproc field_wproc ) } =
+			( $names, $types, $lengths, $decimals,
+			$hashnames, $#$names, $unpacks,
+			$readproc, $writeproc );
 
 	1;	# return true since everything went fine
 	}
-
+# When there is a memo field in dbf, try to open the memo file
 sub init_memo_field
 	{
 	my $self = shift;
 	return $self->{'memo'} if defined $self->{'memo'};
 	require XBase::Memo;
-
+	if (defined $self->{'openoptions'}{'memofile'})
+		{ return XBase::Memo->new($self->{'openoptions'}{'memofile'}); }
+	
 	my $memoname = $self->{'filename'};
-	$memoname =~ s/\.DBF?$/.DBT/;	$memoname =~ s/(\.dbf)?$/.dbt/;
-	my $memo = return XBase::Memo->new($memoname, $self->{'version'});
+	$memoname =~ s/\.DBF$/.DBT/;	$memoname =~ s/(\.dbf)?$/.dbt/;
+	my $memo = XBase::Memo->new($memoname, $self->{'version'});
 	if (not defined $memo)
 		{
 		$memoname = $self->{'filename'};
-		$memoname =~ s/\.DBF?$/.FPT/;	$memoname =~ s/(\.dbf)?$/.fpt/;
-		$memo = return XBase::Memo->new($memoname, $self->{'version'});
+		$memoname =~ s/\.DBF$/.FPT/;	$memoname =~ s/(\.dbf)?$/.fpt/;
+		$memo = XBase::Memo->new($memoname, $self->{'version'});
 		}
 	$memo;
 	}
-
+# Close the file (and memo)
 sub close
 	{
 	my $self = shift;
@@ -146,10 +177,8 @@ sub close
 
 # ###############
 # Little decoding
-
-# Returns the number of the last record
+sub version		{ shift->{'version'}; }
 sub last_record		{ shift->{'num_rec'} - 1; }
-# And the same for fields
 sub last_field		{ shift->{'last_field'}; }
 
 # List of field names, types, lengths and decimals
@@ -160,32 +189,26 @@ sub field_decimals	{ @{shift->{'field_decimals'}}; }
 
 # Return field number for field name
 sub field_name_to_num
-	{
-	my ($self, $name) = @_;
-	$self->{'hash_names'}{$name};
-	}
-
+	{ my ($self, $name) = @_; $self->{'hash_names'}{uc $name}; }
 sub field_type
 	{
 	my ($self, $name) = @_;
-	my $num = $self->field_name_to_num($name);
-	return unless defined $num;
+	defined (my $num = $self->field_name_to_num($name)) or return;
 	($self->field_types)[$num];
 	}
 sub field_length
 	{
 	my ($self, $name) = @_;
-	my $num = $self->field_name_to_num($name);
-	return unless defined $num;
+	defined (my $num = $self->field_name_to_num($name)) or return;
 	($self->field_lengths)[$num];
 	}
 sub field_decimal
 	{
 	my ($self, $name) = @_;
-	my $num = $self->field_name_to_num($name);
-	return unless defined $num;
+	defined (my $num = $self->field_name_to_num($name)) or return;
 	($self->field_decimals)[$num];
 	}
+
 
 # #############################
 # Header, field and record info
@@ -195,9 +218,9 @@ sub field_decimal
 sub get_header_info
 	{
 	my $self = shift;
-	my $hexversion = sprintf "0x%02x", $self->{'version'};
-	my $longversion = $self->decode_version_info();
-	my $printdate = $self->decode_last_change($self->{'last_update'});
+	my $hexversion = sprintf '0x%02x', $self->version;
+	my $longversion = $self->get_version_info;
+	my $printdate = $self->get_last_change;
 	my $numfields = $self->last_field() + 1;
 	my $result = sprintf <<"EOF";
 Filename:	$self->{'filename'}
@@ -210,11 +233,10 @@ Num fields:	$numfields
 Field info:
 Num	Name		Type	Len	Decimal
 EOF
-	return join "", $result, map { $self->get_field_info($_) }
-					(0 .. $self->last_field());
+	return join '', $result, map { $self->get_field_info($_) }
+					(0 .. $self->last_field);
 	}
-
-# Returns info about field in dbf file
+# Return info about field in dbf file
 sub get_field_info
 	{
 	my ($self, $num) = @_;
@@ -222,30 +244,21 @@ sub get_field_info
 		map { $self->{$_}[$num] }
 			qw( field_names field_types field_lengths field_decimals );
 	}
-
-# Returns last_change item in printable string
-sub decode_last_change
+# Return last_change item as printable string
+sub get_last_change
 	{
-	shift if ref $_[0];
-	my ($year, $mon, $day) = unpack "C3", shift;
+	my $self = shift;
+	my $date = $self;
+	if (ref $self) { $date = $self->{'last_update'}; }
+	my ($year, $mon, $day) = unpack 'C3', $date;
 	$year += 1900;
 	return "$year/$mon/$day";
 	}
-
-# Prints the records as comma separated fields
-sub dump_records
-	{
-	my $self = shift;
-	my $num;
-	for $num (0 .. $self->last_record())
-		{ print join(':', map { defined $_ ? $_ : ''; }
-				$self->get_record($num, @_)), "\n"; }
-	1;
-	}
-sub decode_version_info
+# Return text description of the version value
+sub get_version_info
 	{
 	my $version = shift;
-	$version = $version->{'version'} if ref $version;
+	$version = $version->version() if ref $version;
 	my ($vbits, $dbtflag, $memo, $sqltable) = (0, 0, 0, 0);
 	if ($version == 3)	{ $vbits = 3; }
 	elsif ($version == 0x83)	{ $vbits = 3; $memo = 0; $dbtflag = 1;}
@@ -257,14 +270,38 @@ sub decode_version_info
 		}
 	
 	my $result = "ver. $vbits";
-	if ($memo)
-		{ $result .= " with memo file"; }
-	elsif ($dbtflag)
-		{ $result .= " with DBT file"; }
-	$result .= " containing SQL table" if $sqltable;
+	if ($memo)	{ $result .= ' with memo file'; }
+	elsif ($dbtflag)	{ $result .= ' with DBT file'; }
+	$result .= ' containing SQL table' if $sqltable;
 	$result;
 	}
 
+
+# Print the records as colon separated fields
+sub dump_records
+	{
+	my $self = shift;
+	my %options = ( 'rs' => "\n", 'fs' => ':', 'undef' => '' );
+	my %inoptions = @_;
+	for my $key (keys %inoptions)
+		{
+		my $value = $inoptions{$key};
+		my $outkey = lc $key;
+		$outkey =~ s/[^a-z]//g;
+		$options{$outkey} = $value;
+		}
+
+	my ($rs, $fs, $undef, $fields) = @options{ qw( rs fs undef fields ) };
+	my @fields = ();
+	@fields = @$fields if defined $fields;
+
+	my $result = $self->get_all_records(@fields);
+	return unless defined $result;
+
+	print map { (join($fs, map { defined $_ ? $_ : $undef } @$_),
+							$rs); } @$result;
+	1;
+	}
 
 
 # ###################
@@ -274,92 +311,69 @@ sub decode_version_info
 # record (starting from 0) and optionally names of the required
 # fields. If no names are specified, all fields are returned. The
 # first value in the returned list if always 1/0 deleted flag. Returns
-# empty list on error
+# empty list on error.
 
 sub get_record
 	{
-	my ($self, $num, @fields) = @_;
+	my ($self, $num) = (shift, shift);
 	$self->NullError();
-
-	my @data = $self->read_record($num);
-				# SUPER will uncache/unpack for us
-	return unless @data;
-
-	@data = $self->process_list_on_read(@data);
-
-	if (@fields)		# now make a list of numbers of fields
-		{		# to be returned
-		return $data[0], map {
-			if (not defined $self->{'hash_names'}{$_})
-				{
-				Warning "Field named '$_' does not seem to exist\n";
-				return unless FIXPROBLEMS;
-				undef;
-				}
-			else
-				{ $data[$self->{'hash_names'}{$_} + 1]; }
-			} @fields;
-		}
-	return @data;
+	$self->get_record_nf( $num, map { $self->field_name_to_num($_); } @_);
 	}
-
-sub get_record_as_hash
+*get_record_as_hash = \&get_record_hash;
+sub get_record_hash
 	{
 	my ($self, $num) = @_;
-	my @list = $self->get_record($num);
-	return () unless @list;
+	my @list = $self->get_record($num) or return;
 	my $hash = {};
 	@{$hash}{ '_DELETED', $self->field_names() } = @list;
 	return %$hash if wantarray;
 	$hash;
 	}
-
-sub process_list_on_read
+sub get_record_nf
 	{
-	my $self = shift;
+	my ($self, $num, @fieldnums) = @_;
+	my $data = $self->read_record($num) or return;
 
-	my @data;
-	my $num;
-	for $num (0 .. $self->last_field() + 1)
-		{
-		my $value = $_[$num];
-		if ($num == 0)
-			{
-			if ($value eq '*')      { $data[$num] = 1; }
-			elsif ($value eq ' ')	{ $data[$num] = 0; }
-			else { Warning "Unknown deleted flag '$value' found\n";}
-			next;
-			}
-		my $type = $self->{'field_types'}[$num - 1];
-		if ($type eq 'C')
-			{
-			$value =~ s/\s+$// if $CLEARNULLS;
-			$data[$num] = $value
-			}
-		elsif ($type eq 'L')
-			{
-			if ($value =~ /^[YyTt]$/)	{ $data[$num] = 1; }
-			if ($value =~ /^[NnFf]$/)	{ $data[$num] = 0; }
-			# return undef;	# ($value eq '?')
-			}
-		elsif ($type eq 'N' or $type eq 'F')
-			{
-			next unless $value =~ /\d/;
-			my $len = $self->{'field_lengths'}[$num - 1];
-			my $dec = $self->{'field_decimals'}[$num - 1];
-			$data[$num] = (sprintf "%-$len.${dec}f", $value + 0) + 0;
-			}
-		elsif ($type =~ /^[MGBP]$/)
-			{
-			if (defined $self->{'memo'} and $value !~ /^ +$/)
-				{ $data[$num] = $self->{'memo'}->read_record($value); }
-			}
-		else
-			{ $data[$num] = $value;	}
-		}
-	@data;
+	if (not @fieldnums)
+		{ @fieldnums = ( 0 .. $self->last_field ); }
+	my $unpack = join ' ', '@0a1', map {
+		my $e;
+		defined $_ and $e = $self->{'field_unpacks'}[$_];
+		defined $e ? $e : '@0a0'; } @fieldnums;
+	
+	my $rproc = $self->{'field_rproc'};
+	my @fns = (\&_read_deleted, map { (defined $_ and defined $rproc->[$_]) ? $rproc->[$_] : sub { undef; }; } @fieldnums);
+
+	my @out = unpack $unpack, $data;
+
+	for (@out) { $_ = &{ shift @fns }($_); }
+
+	@out;
 	}
 
+# Processing on read
+sub _read_deleted
+	{
+	my $value = shift;
+	if ($value eq '*') { return 1; } elsif ($value eq ' ') { return 0; }
+	undef;
+	}
+
+sub get_all_records
+	{
+	my $self = shift;
+	my @fieldnums = map { $self->field_name_to_num($_); } @_;
+	my $result = [];
+	my $lastrec = $self->last_record;
+	for (0 .. $lastrec)
+		{
+		my @record = $self->get_record_nf($_, @fieldnums);;
+		return unless @record;
+		unless ($record[0])
+			{ push @$result, [ @record[1 .. $#record] ]; }
+		}
+	$result;
+	}
 
 # #############
 # Write records
@@ -370,11 +384,11 @@ sub set_record
 	{
 	my ($self, $num) = (shift, shift);
 	$self->NullError();
-	my @data = $self->process_list_on_write($num, @_,
-				(undef) x ($self->last_field - $#_));
-	$self->write_record($num, " ", @data);
-	$num = "0E0" unless $num;
-	$num;
+	my $wproc = $self->{'field_wproc'};
+	my ($i, @data);
+	for ($i = 0; $i <= $#$wproc; $i++)
+		{ $data[$i] = &{ $wproc->[$i] }(shift); }
+	$self->write_record($num, ' ', @data);
 	}
 
 # Write record, fields are specified as hash, unspecified are set to
@@ -383,29 +397,19 @@ sub set_record_hash
 	{
 	my ($self, $num, %data) = @_;
 	$self->NullError();
-	$self->set_record($num, map { $data{$_} } @{$self->{'field_names'}} );
+	$self->set_record($num, map { $data{$_} } $self->field_names );
 	}
 
 # Write record, fields specified as hash, unspecified will be
 # unchanged
 sub update_record_hash
 	{
-	my ($self, $num, %data) = @_;
+	my ($self, $num) = ( shift, shift );
 	$self->NullError();
 
-	my @data = $self->get_record($num);	# read the original data first
-	return unless @data;
-
-	shift @data;		# remove the deleted flag
-
-	my $i;
-	for $i (0 .. $self->last_field())
-		{
-		if (exists $data{$self->{'field_names'}[$i]})
-			{ $data[$i] = $data{$self->{'field_names'}[$i]}; }
-		}
-
-	$self->set_record($num, @data);
+	my %olddata = $self->get_record_hash($num);
+	return unless %olddata;
+	$self->set_record_hash($num, %olddata, @_);
 	}
 
 # Actually write the data (calling XBase::Base::write_record) and keep
@@ -413,15 +417,15 @@ sub update_record_hash
 sub write_record
 	{
 	my ($self, $num) = (shift, shift);
-	$self->SUPER::write_record($num, @_);
+	my $ret = $self->SUPER::write_record($num, @_) or return;
 
-	if ($num > $self->last_record())
+	if ($num > $self->last_record)
 		{
 		$self->SUPER::write_record($num + 1, "\x1a");	# add EOF
 		$self->update_last_record($num) or return;
 		}
-	$self->update_last_change() or return;
-	1;
+	$self->update_last_change or return;
+	$ret;
 	}
 
 # Delete and undelete record
@@ -429,8 +433,6 @@ sub delete_record
 	{
 	my ($self, $num) = @_;
 	$self->NullError();
-	if ($num > $self->last_record())
-		{ $self->Error("Can't delete record number $num, there is not so many of them\n"); return;}
 	$self->write_record($num, "*");
 	1;
 	}
@@ -438,89 +440,15 @@ sub undelete_record
 	{
 	my ($self, $num) = @_;
 	$self->NullError();
-	if ($num > $self->last_record())
-		{ $self->Error("Can't undelete record number $num, there is not so many of them\n"); return;}
 	$self->write_record($num, " ");
 	1;
-	}
-
-# Convert Perl values to those in dbf
-sub process_list_on_write
-	{
-	my ($self, $rec_num) = (shift, shift);
-
-	my @types = @{$self->{'field_types'}};
-	my @lengths = @{$self->{'field_lengths'}};
-	my @decimals = @{$self->{'field_decimals'}};
-
-	my @data = ();
-	my $num;
-	my $value;
-	for $num (0 .. $self->last_field())
-		{
-		my ($type, $length, $decimal) = ($types[$num],
-				$lengths[$num], $decimals[$num]);
-		
-		$value = shift;
-		if ($type eq 'C')
-			{
-			$value .= "";
-			$value = sprintf "%-$length.${length}s", $value;
-			}
-		elsif ($type eq 'L')
-			{
-			if (not defined $value)	{ $value = "?"; }
-			elsif ($value == 1)	{ $value = "Y"; }
-			elsif ($value == 0)	{ $value = "N"; }
-			else			{ $value = "?"; }
-			$value = sprintf "%-$length.${length}s", $value;
-			}
-		elsif ($type =~ /^[NFD]$/)
-			{
-			$value += 0;
-			$value = sprintf "%$length.${decimal}f", $value;
-			}
-		elsif ($type =~ /^[MGBP]$/)
-			{
-			if (defined $self->{'memo'})
-				{
-				my $memo_index;
-				# we need to figure out, where in memo file
-				# to store the data
-				if ($rec_num <= $self->last_record())
-					{
-					$memo_index = ($self->read_record($rec_num))[$num + 1];
-					}
-				$memo_index = -1 if not defined $memo_index or $memo_index =~ /^ +$/;
-				
-				# we suggest but memo object may
-				# choose another location	
-			
-				$memo_index = $self->{'memo'}
-					->write_record($memo_index,
-							$type, $value);
-				$value = $memo_index + 0;
-				}
-			else
-				{ $value = ""; }
-			$value = sprintf "%"."$length.$length"."s", $value;
-			}
-		else
-			{
-			$value .= "";
-			$value = sprintf "%-$length.${decimal}s", $value;
-			}
-		}
-	continue
-		{ $data[$num] = $value; }
-	@data;
 	}
 
 # Update the last change date
 sub update_last_change
 	{
 	my $self = shift;
-	return if defined $self->{'updated_today'};
+	return 1 if defined $self->{'updated_today'};
 	my ($y, $m, $d) = (localtime)[5, 4, 3]; $m++;
 	$self->write_to(1, pack "C3", ($y, $m, $d)) or return;
 	$self->{'updated_today'} = 1;
@@ -537,7 +465,7 @@ sub update_last_record
 # Creating new dbf file
 sub create
 	{
-	NullError();
+	XBase->NullError();
 	my $class = shift;
 	my %options = @_;
 	if (ref $class)
@@ -554,7 +482,7 @@ sub create
 		{
 		if (not defined $options{$key})
 			{
-			Error "Tag $key must be specified when creating new table\n";
+			__PACKAGE__->Error("Tag $key must be specified when creating new table\n");
 			return;
 			}
 		}
@@ -631,7 +559,25 @@ sub drop
 		}
 	XBase::Base::drop($filename);
 	}
-
+# Lock and unlock
+sub locksh
+	{
+	my $self = shift;
+	$self->{'memo'}->locksh() if defined $self->{'memo'};
+	$self->SUPER::locksh;
+	}
+sub lockex
+	{
+	my $self = shift;
+	$self->{'memo'}->lockex() if defined $self->{'memo'};
+	$self->SUPER::lockex;
+	}
+sub unlock
+	{
+	my $self = shift;
+	$self->{'memo'}->unlock() if defined $self->{'memo'};
+	$self->SUPER::unlock;
+	}
 1;
 
 __END__
@@ -659,7 +605,7 @@ B<Warning> for now: XBase doesn't support any index files at present!
 That means if you change your dbf, your idx/mdx (if you have any) will
 not match. You will need to regenerate them using other tools --
 probably those that later make use of them. If you do not have any
-indexes, do not vorry about them.
+indexes, do not worry about them.
 
 The following methods are supported by XBase module:
 
@@ -696,12 +642,12 @@ strings (C, N, L, D). If you set some value as undefined, create will
 make it into some reasonable default.
 
 The new file mustn't exist yet -- XBase will not allow you to
-overwrite existing table. Use B<drop> to delete it first (or unlink).
+overwrite existing table. Use B<drop> (or unlink) to delete it first.
 
 =item drop
 
-This method closes the table and deletes it on disk (including dbt
-file, if there is any).
+This method closes the table and deletes it on disk (including
+associated memo file, if there is any).
 
 =item last_record
 
@@ -752,6 +698,12 @@ the record number.
 
 =back
 
+If you need to deal with the whole content of the dbf file, there is
+a method B<get_all_records>. It returns a reference to array
+containing array of values for each record. Only not deleted records
+are returned and so the C<_DELETED> flag is not included in the record
+data. As a parameter, pass list of fields to return.
+
 =head2 Writing the data
 
 All three writing methods always undelete the record. On success they
@@ -781,6 +733,42 @@ Deletes/undeletes specified record.
 
 =back
 
+=head2 Dumping the content of the file
+
+To print the content of the file in a readable form, use method
+B<dump_records>. It prints all not deleted records from the file. By
+default, all fields are printed, separated by colons, one record on
+a row. The method can have parameters in a form of a hash with the
+following keys:
+
+=over 4
+
+=item rs
+
+Record separator, string, newline by default.
+
+=item fs
+
+Field separator, string, one colon by default.
+
+=item fields
+
+Reference to a list of names of the fields to print. By default it's
+undef, meaning all fields.
+
+=item undef
+
+What to print for undefined (NULL) values, empty string by default.
+
+=back
+
+Example of use is
+
+    use XBase;
+    my $table = new XBase "table" or die XBase->errstr;
+    $table->dump_records("fs" => " | ", "rs" => " <-+\n",
+			"fields" => [ "id", "msg" ]);'
+
 =head2 Errors and debugging
 
 If the method fails (returns false or null list), the error message
@@ -789,9 +777,7 @@ method fails, you have no object so you get the error message using
 class syntax C<XBase-E<gt>errstr()>.
 
 The methods B<get_header_info> returns (not prints) string with
-information about the file and about the fields. Method B<dump_records>
-prints all records from the file, one on a line, fields separated by
-commas.
+information about the file and about the fields.
 
 Module XBase::Base(3) defines some basic functionality and also following
 variables, that affect the internal behaviour:
@@ -818,22 +804,17 @@ end of fixed character fields on read. The default is true.
 This is a code to update field MSG in record where ID is 123.
 
     use XBase;
-    my $table = new XBase("test.dbf") or die XBase->errstr();
-    for (0 .. $table->last_record())
+    my $table = new XBase "test.dbf" or die XBase->errstr;
+    for (0 .. $table->last_record)
     	{
-    	my ($deleted, $id)
-    		= $table->get_record($_, "ID")
+    	my ($deleted, $id) = $table->get_record($_, "ID")
     	die $table->errstr unless defined $deleted;
     	next if $deleted;
-    	if ($id == 123)
-    		{
-    		$table->update_record_hash($_,
-    			"MSG" => "New message");
-    		last;
-    		}
+	$table->update_record_hash($_, "MSG" => "New message")
+						if $id == 123;
     	}
 
-Some more examples are in the eg directory of the distribution.
+For some more examples please see the eg directory of the distribution.
 
 =head1 MEMO FIELDS and INDEX FILES
 
@@ -879,17 +860,17 @@ welcome.
 
 =head1 VERSION
 
-0.0584
+0.0599
 
 =head1 AUTHOR
 
-(c) Jan Pazdziora, adelton@fi.muni.cz, http://www.fi.muni.cz/~adelton/
-
-at Faculty of Informatics, Masaryk University in Brno, Czech Republic
+(c) 1997--1998 Jan Pazdziora, adelton@fi.muni.cz,
+http://www.fi.muni.cz/~adelton/ at Faculty of Informatics, Masaryk
+University in Brno, Czech Republic
 
 =head1 SEE ALSO
 
-perl(1); DBD::XBase(3) and DBI(3) for DBI interface
+perl(1); DBD::XBase(3) and DBI(3) for DBI interface; dbfdump(1)
 
 =cut
 
