@@ -100,14 +100,14 @@ deleted flag has name _DELETED.
 
 =over 4
 
-=item write_record
+=item set_record
 
 As arguments, takes the number of the record and the list of values
 of the fields. It writes the record to the file. Unspecified fields
 (if you pass less than you should) are set to undef/empty. The record
 is undeleted.
 
-=item write_record_hash
+=item set_record_hash
 
 Takes number of the record and hash, sets the fields, unspecified are
 undeffed/emptied. The record is undeleted.
@@ -227,7 +227,7 @@ dBase nor Fox*, so there are probably pieces missing.
 
 =head1 VERSION
 
-0.03
+0.031
 
 =head1 AUTHOR
 
@@ -262,7 +262,7 @@ use vars qw( $VERSION $errstr $CLEARNULLS @ISA );
 
 @ISA = qw( XBase::Base );
 
-$VERSION = "0.03";
+$VERSION = "0.031";
 
 $errstr = '';	# only after new, otherwise use method $table->errstr;
 
@@ -333,7 +333,7 @@ sub read_header
 	@{$hashnames}{ reverse @$names } = reverse ( 0 .. $#$names );
 
 	my $template = join "", "a1",
-		map { "a" . ($lengths->[$_]+$decimals->[$_]); } (0 .. $#$names);
+		map { "a" . $lengths->[$_]; } (0 .. $#$names);
 	
 			# now it's the time to store the values to the object
 	@{$self}{ qw( version last_update num_rec header_len record_len
@@ -401,7 +401,7 @@ Record length:	$self->{'record_len'}
 Last change:	$printdate
 Num fields:	$numfields
 Field info:
-	Name		Type	Len	Decimal
+Num	Name		Type	Len	Decimal
 EOF
 	return join "", $result, map { $self->get_field_info($_) }
 					(0 .. $self->last_field());
@@ -411,8 +411,9 @@ EOF
 sub get_field_info
 	{
 	my ($self, $num) = @_;
-	sprintf "\t%-16.16s%-8.8s%-8.8s%-8.8s\n", map { $self->{$_}[$num] }
-		qw( field_names field_types field_lengths field_decimals );
+	sprintf "%d.\t%-16.16s%-8.8s%-8.8s%-8.8s\n", $num + 1,
+		map { $self->{$_}[$num] }
+			qw( field_names field_types field_lengths field_decimals );
 	}
 
 # Returns last_change item in printable string
@@ -535,7 +536,7 @@ sub process_list_on_read
 			}
 		elsif ($type eq 'N' or $type eq 'F')
 			{
-			substr($value, $self->{'field_lengths'}[$num - 1], 0) = '.';
+			substr($value, $self->{'field_lengths'}[$num - 1] - $self->{'field_decimals'}[$num - 1], 0) = '.';
 			$data[$num] = $value + 0;
 			}
 		elsif ($type =~ /^[MGBP]$/)
@@ -645,13 +646,12 @@ sub process_list_on_write
 		{
 		my ($type, $length, $decimal) = ($types[$num],
 				$lengths[$num], $decimals[$num]);
-		my $totlen = $length + $decimal;
 		
 		$value = shift;
 		if ($type eq 'C')
 			{
 			$value .= "";
-			$value = sprintf "%-$totlen.${totlen}s", $value;
+			$value = sprintf "%-"."$length.$length"."s", $value;
 			}
 		elsif ($type eq 'L')
 			{
@@ -659,12 +659,12 @@ sub process_list_on_write
 			elsif ($value == 1)	{ $value = "Y"; }
 			elsif ($value == 0)	{ $value = "N"; }
 			else			{ $value = "?"; }
-			$value = sprintf "%-$totlen.${totlen}s", $value;
+			$value = sprintf "%-"."$length.$length"."s", $value;
 			}
 		elsif ($type =~ /^[NFD]$/)
 			{
 			$value += 0;
-			$value = sprintf "%$totlen.${decimal}f", $value;
+			$value = sprintf "%$length.${decimal}f", $value;
 			$value =~ s/[.,]//;
 			}
 		elsif ($type =~ /^[MGBP]$/)
@@ -689,7 +689,7 @@ sub process_list_on_write
 				}
 			else
 				{ $value = ""; }
-			$value = sprintf "%$length.${totlen}s", $value;
+			$value = sprintf "%"."$length.$length"."s", $value;
 			}
 		else
 			{
@@ -767,12 +767,14 @@ sub create
 			{
 			$decimal = 0;
 			}
+		$record_len += $length;
+		if ($type eq "C")
+			{
+			$decimal = $length % 256;
+			$length = int($length / 256);
+			}
 		$header .= pack "A11A1VCCvCvCA7C", $name, $type, 0,
 				$length, $decimal, 0, 0, 0, 0, "", 0;
-		if ($type eq "C")
-			{ $record_len += $length + 256 * $decimal; }
-		else
-			{ $record_len += $length + $decimal; }
 		}
 	$header .= "\x0d";
 
