@@ -1,6 +1,58 @@
 
 Revision history for Perl extension XBase and DBD::Xbase.
 
+0.0693 Tue Aug 25 10:25:20 MET DST 1998
+
+	DBD::XBase: Fixed handling ORDER BY with WHERE clauses,
+	reported by Kendal Van Dyke.
+	
+	XBase: added nolongchars -- omitted from 0.068.
+
+	XBase::Index: added ro support for Clipper's ntx, the whole
+	module reworked. Thanks to Frans van Loon for providing
+	example ntx files and code that helped me to understand the
+	format. Also thanks to Robert Geer for his C code that also
+	helps me to check the expected results.
+
+	XBase::Base: last_record can be -1, meaning unknown --
+	disables checks.
+
+	Added t/3_ntx.t and added ORDER BY test to t/5_dbd_select.t.
+
+	Some documentation improvements.
+
+0.068 Thu Aug 20 18:43:17 MET DST 1998
+
+	DBD::XBase: added support for ORDER BY, defined using substh.
+
+	Fixed error by 1 in deleting all records.
+
+	Added support for NULLABLE, NUM_OF_PARAMS and TYPE in FETCH.
+
+	Defined data_sources to dbi:XBase:.; disconnect_all returns 1;
+	defined tables, disconnect and DESTROY; quote adds support for
+	NULL.
+
+	XBase: create now marks presence of a dbt file in dbf.
+
+	Added attribute nolongchars to disable character fields longer
+	than 255.
+
+	Erik Bachmann's homepage moved.
+
+	XBase::Memo: added suport for memosep attribute, default
+	\x1a\x1a. Correct header is now written for dBaseIV memo
+	files.
+
+	Fix of handling dBaseIV memo records, patch by Barry Fishman.
+
+	XBase::SQL: added ORDER BY support, recognizes VARCHAR.
+
+	In dbit/40blobs.t we only try blob size 64 -- fix for bug in
+	Perl regexp engine. Change in dbit/40bindparam.t, quick fix
+	for missing NULL chars. In dbit/50chopblanks.t swapped
+	$$ref[1] and $name.
+
 0.065 Sun Jun  7 15:18:57 MET DST 1998
 
 	Added table specific ChopBlanks. Added fetch_hashref to
@@ -197,8 +249,7 @@ Revision history for Perl extension XBase and DBD::Xbase.
 	people to test and comment on it.
 
 
-Note: Versions with (*****) tag were major updates and included code
-and/or internal methods rewrite.
+Note: Versions tagged (*****) were major updates and code chnages.
 
 ---
 
@@ -213,7 +264,7 @@ package, but the interface seemed rather complicated to me.
 So with the help of article XBase File Format Description by Erik
 Bachmann on URL
 
-    http://www.geocities.com/SiliconValley/Pines/2563/xbase.htm
+	http://www.e-bachmann.dk/docs/xbase.htm
 
 I have written a new module. It doesn't use any code from Xbase-1.07
 and you are free to use and distribute it under the same terms as Perl

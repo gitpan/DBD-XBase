@@ -19,7 +19,7 @@ use vars qw($VERSION @ISA @EXPORT $err $errstr $drh);
 
 require Exporter;
 
-$VERSION = '0.065';
+$VERSION = '0.0693';
 
 $err = 0;
 $errstr = '';
@@ -38,6 +38,9 @@ sub driver
 		'Attribution'	=> 'DBD::XBase by Jan Pazdziora',
 		});
 	}
+
+sub data_sources
+	{ 'dbi:XBase:.'; }
 
 
 package DBD::XBase::dr;
@@ -60,8 +63,10 @@ sub connect
 	}
 
 sub disconnect_all
-	{ }
+	{ 1; }
 
+sub data_sources
+	{ 'dbi:XBase:.'; }
 
 package DBD::XBase::db;
 use strict;
@@ -120,18 +125,36 @@ sub _ListTables
 	closedir DIR;
 	@result;
 	}
+sub tables
+	{ my $dbh = shift; $dbh->DBD::XBase::db::_ListTables; }
+
 sub quote
 	{
 	my $text = $_[1];
+	return 'NULL' unless defined $text;
 	$text =~ s/([\\'])/\\$1/g;
-	"'$text'";
+	return "'$text'";
+
+	while ($text =~ /[\\']/sg)
+		{
+		my $pos = pos($text);
+		substr($text, $pos - 1, 0) = '\\';
+		pos($text) = $pos + 1;
+		}
+
+	return "'$text'";
+
 	}
 sub commit
 	{ warn "Commit ineffective while AutoCommit is on"; 1; }
 sub rollback
 	{ warn "Commit ineffective while AutoCommit is on"; 0; }
 
+sub disconnect
+	{ 1; }
 
+sub DESTROY
+	{ }
 
 
 package DBD::XBase::st;
@@ -244,7 +267,7 @@ sub execute
 		return 1;
 		}
 	
-	if (defined $parsed_sql->{'selectall'})
+	if (not defined $parsed_sql->{'fields'} and defined $parsed_sql->{'selectall'})
 		{
 		$parsed_sql->{'fields'} = [ $xbase->field_names ];
 		for my $field (@{$parsed_sql->{'fields'}})
@@ -257,7 +280,38 @@ sub execute
 	### use Data::Dumper; print Dumper $parsed_sql;
 	if ($command eq 'select')
 		{
-		$sth->{'xbase_cursor'} = $cursor;
+		if (defined $parsed_sql->{'orderfield'})
+			{
+			my $orderfield = ${$parsed_sql->{'orderfield'}}[0];
+
+			my $subparsed_sql = { %$parsed_sql };
+			delete $subparsed_sql->{'orderfield'};
+			unshift @{$subparsed_sql->{'fields'}}, $orderfield;
+			my $substh = DBI::_new_sth($dbh, {
+				'Statement'	=> $sth->{'Statement'},
+				'dbh'		=> $dbh,
+				'xbase_parsed_sql'	=> $subparsed_sql,
+				});
+			$substh->execute(@{$sth->{'param'}});
+			my $data = $substh->fetchall_arrayref;
+			my $type = $xbase->field_type($orderfield);
+			if ($type =~ /^[CML]$/)
+				{
+				$sth->{'xbase_lines'} =
+					[ map { shift @$_; [ @$_ ] }
+						sort { $a->[0] cmp $b->[0] } @$data ];
+				}
+				else
+				{
+				$sth->{'xbase_lines'} =
+					[ map { shift @$_; [ @$_ ] }
+						sort { $a->[0] <=> $b->[0] } @$data ];
+				}
+			}
+		else
+			{
+			$sth->{'xbase_cursor'} = $cursor;
+			}
 		$sth->{'NUM_OF_FIELDS'} = scalar @fields;
 		}
 	elsif ($command eq 'delete')
@@ -265,7 +319,7 @@ sub execute
 		if (not defined $wherefn)
 			{
 			my $last = $xbase->last_record;
-			for (my $i = 0; $i < $last; $i++)
+			for (my $i = 0; $i <= $last; $i++)
 				{ $xbase->delete_record($i); }
 			return 1;
 			}
@@ -298,20 +352,27 @@ sub execute
 sub fetch
 	{
         my $sth = shift;
-	return unless defined $sth->{'xbase_cursor'};
-	my $cursor = $sth->{'xbase_cursor'};
-	my $wherefn = $sth->{'xbase_parsed_sql'}{'wherefn'};
-
-	my $xbase = $cursor->table;
-	my $values;
-	while (defined($values = $cursor->fetch_hashref))
-		{
-		next if defined $wherefn and not &{$wherefn}($xbase, $values, $sth->{'param'}, 0);
-		last;
-		}
 	my $retarray;
-	$retarray = [ @{$values}{ @{$sth->{'xbase_parsed_sql'}{'fields'}}} ]
-		if defined $values;
+	if (defined $sth->{'xbase_lines'})
+		{ $retarray = shift @{$sth->{'xbase_lines'}}; }
+	elsif (defined $sth->{'xbase_cursor'})
+		{
+		my $cursor = $sth->{'xbase_cursor'};
+		my $wherefn = $sth->{'xbase_parsed_sql'}{'wherefn'};
+
+		my $xbase = $cursor->table;
+		my $values;
+		while (defined($values = $cursor->fetch_hashref))
+			{
+			next if defined $wherefn and not &{$wherefn}($xbase, $values, $sth->{'param'}, 0);
+			last;
+			}
+		$retarray = [ @{$values}{ @{$sth->{'xbase_parsed_sql'}{'fields'}}} ]
+			if defined $values;
+		}
+	else
+		{ return; }
+	
 	my $i = 0;
 	for my $ref ( @{$sth->{'xbase_bind_col'}} )
 		{
@@ -321,9 +382,7 @@ sub fetch
 	continue
 		{ $i++; }
 	
-	if (defined $values)
-		{ return $retarray; }
-	return;
+	return $retarray;
 	}
 *fetchrow_arrayref = \&fetch;
 
@@ -331,11 +390,21 @@ sub FETCH
 	{
 	my ($sth, $attrib) = @_;
 	if ($attrib eq 'NAME')
-		{ return [ @{$sth->{'xbase_parsed_sql'}{'fields'}} ]; }
+		{
+		return [ @{$sth->{'xbase_parsed_sql'}{'fields'}} ]; }
 	elsif ($attrib eq 'NULLABLE')
-		{ return [ (1) x scalar(@{ $sth->FETCH('NAME') }) ]; }
+		{
+		return [ (1) x scalar(@{$sth->{'xbase_parsed_sql'}{'fields'}}) ];
+		}
+	elsif ($attrib eq 'TYPE')
+		{
+		return [ (0) x scalar(@{$sth->{'xbase_parsed_sql'}{'fields'}}) ];
+		}
+		
 	elsif ($attrib eq 'ChopBlanks')
 		{ return $sth->{'xbase_parsed_sql'}->{'ChopBlanks'}; }
+	elsif ($attrib eq 'NUM_OF_PARAMS')
+		{ return $sth->{'xbase_parsed_sql'}->{'numofbinds'}; }
 	else
 		{ return $sth->DBD::_::st::FETCH($attrib); }
 	}
@@ -348,6 +417,8 @@ sub STORE
 	}
     
 sub finish { 1; }
+
+sub DESTROY { }
 
 1;
 
@@ -366,12 +437,15 @@ __END__
     while (@data = $sth->fetchrow_array())
 		{ ## further processing }
 
+    $dbh->do('update table set name = "Joe" where id = 45');
+
 =head1 DESCRIPTION
 
 DBI compliant driver for module XBase. Please refer to DBI(3)
 documentation for how to actually use the module.
 In the B<connect> call, specify the directory for a database name.
-This is where the DBD::XBase will look for the tables.
+This is where the DBD::XBase will look for the tables (dbf and other
+files).
 
 Note that with dbf, there is no database server that the driver
 would talk to. This DBD::XBase calls methods from XBase.pm module to
@@ -388,6 +462,7 @@ The SQL commands currently supported by DBD::XBase's prepare are:
 =head2 select
 
     select fields from table [ where condition ]
+					[ order by field ]
 
 Fields is a comma separated list of fields or a C<*> for all. The
 C<where> condition specifies which rows will be returned, you can
@@ -469,7 +544,7 @@ Example:
 
 =head1 VERSION
 
-0.065
+0.0693
 
 =head1 AUTHOR
 

@@ -1,5 +1,4 @@
 
-
 =head1 NAME
 
 XBase - Perl module for reading and writing the dbf files
@@ -19,7 +18,7 @@ use XBase::Base;		# will give us general methods
 use vars qw( $VERSION $errstr $CLEARNULLS @ISA );
 
 @ISA = qw( XBase::Base );
-$VERSION = '0.065';
+$VERSION = '0.0693';
 $CLEARNULLS = 1;		# Cut off white spaces from ends of char fields
 
 *errstr = \$XBase::Base::errstr;
@@ -81,7 +80,8 @@ sub read_header
 		if ($type eq 'C')		# char
 			{
 			# fixup for char length > 256
-			$length += 256 * $decimal; $decimal = 0;
+			if ($decimal and not $self->{'openoptions'}{'nolongchars'})
+				{ $length += 256 * $decimal; $decimal = 0; }
 			$rproc = sub { my $value = shift;
 				if ($self->{'ChopBlanks'})
 					{ $value =~ s/\s+$//; } ### $value =~ s/^\s+//; }
@@ -168,17 +168,20 @@ sub init_memo_field
 	my $self = shift;
 	return $self->{'memo'} if defined $self->{'memo'};
 	require XBase::Memo;
+	my %options = ( 'dbf_version' => $self->{'version'},
+		'memosep' => $self->{'openoptions'}{'memosep'} );
+	
 	if (defined $self->{'openoptions'}{'memofile'})
-		{ return XBase::Memo->new($self->{'openoptions'}{'memofile'}); }
+		{ return XBase::Memo->new($self->{'openoptions'}{'memofile'}, %options); }
 	
 	my $memo;
 	my $memoname = $self->{'filename'};
 	$memoname =~ s/\.DBF$/.FPT/ or $memoname =~ s/(\.dbf)?$/.fpt/;
-	$memo = XBase::Memo->new($memoname, $self->{'version'}) and return $memo;
+	$memo = XBase::Memo->new($memoname, %options) and return $memo;
 	
 	$memoname = $self->{'filename'};
 	$memoname =~ s/\.DBF$/.DBT/ or $memoname =~ s/(\.dbf)?$/.dbt/;
-	$memo = XBase::Memo->new($memoname, $self->{'version'}) and return $memo;
+	$memo = XBase::Memo->new($memoname, %options) and return $memo;
 	return;
 	}
 # Close the file (and memo)
@@ -485,9 +488,6 @@ sub create
 	my $version = $options{'version'};
 	$version = 3 unless defined $version;
 
-	my $header = pack 'CCCCVvvvCCa12CCv', $version, 0, 0, 0, 0, 0, 0, 0,
-			0, 0, '', 0, 0, 0;
-
 	my $key;
 	for $key ( qw( field_names field_types field_lengths field_decimals ) )
 		{
@@ -498,6 +498,7 @@ sub create
 			}
 		}
 
+	my $fieldspack = '';
 	my $record_len = 1;
 	my $i;
 	for $i (0 .. $#{$options{'field_names'}})
@@ -531,29 +532,40 @@ sub create
 			$decimal = int($length / 256);
 			$length %= 256;
 			}
-		$header .= pack 'a11a1VCCvCvCa7C', $name, $type, $offset,
+		$fieldspack .= pack 'a11a1VCCvCvCa7C', $name, $type, $offset,
 				$length, $decimal, 0, 0, 0, 0, '', 0;
+		if ($type eq 'M') { $version |= 0x80; }
 		}
-	$header .= "\x0d";
+	$fieldspack .= "\x0d";
 
-	substr($header, 8, 4) = pack "vv", (length $header), $record_len;
+	my $header = pack 'CCCCVvvvCCa12CCv', $version, 0, 0, 0, 0,
+		(32 + length $fieldspack), $record_len, 0, 0, 0, '', 0, 0, 0;
+	$header .= $fieldspack;
 
 	my $tmp = $class->new();
+	my $basename = $options{'name'};
+	$basename =~ s/\.dbf$//i;
 	my $newname = $options{'name'};
-	if (defined $newname and $newname !~ /\.dbf$/) { $newname .= ".dbf"; }
+	if (defined $newname and not $newname =~ /\.dbf$/)
+						{ $newname .= '.dbf'; }
 	$tmp->create_file($newname, 0700) or return;
 	$tmp->write_to(0, $header) or return;
 	$tmp->update_last_change();
 	$tmp->close();
 
-	if (grep { /^[MBGP]$/ } @{$options{'field_types'}})
+	if ($version & 0x80)
 		{
 		require XBase::Memo;
-		my $dbtname = $options{'name'};
-		$dbtname =~ s/\.DBF$/.DBT/ or $dbtname =~ s/(\.dbf)?$/.dbt/;
+		my $dbtname = $options{'memofile'};
+		if (not defined $dbtname)
+			{
+			$dbtname = $options{'name'};
+			$dbtname =~ s/\.DBF$/.DBT/ or $dbtname =~ s/(\.dbf)?$/.dbt/;
+			}
 		my $dbttmp = XBase::Memo->new();
 		$dbttmp->create('name' => $dbtname,
-			'version' => $options{'version'}) or return;
+			'version' => ($version & 15),
+			'dbf_filename' => $basename) or return;
 		}
 
 	return $class->new($options{'name'});
@@ -614,13 +626,16 @@ sub prepare_select_with_index
 	require XBase::Index;
 	my $index = new XBase::Index $file or
 		do { $self->Error(XBase->errstr); return; };
-	$index->prepare_select;
+	$index->prepare_select or
+		do { $self->Error($index->errstr); return; };
 	return bless [ $self, undef, $fieldnums, $fieldnames, $index ],
 							'XBase::IndexCursor';
 		# object, recno, field numbers, field names, index file
 	}
 
 package XBase::Cursor;
+use vars qw( @ISA );
+@ISA = qw( XBase::Base );
 
 sub fetch
 	{
@@ -696,8 +711,10 @@ files, if needed. Module XBase provides simple native interface to
 XBase files. For DBI compliant database access, see the DBD::XBase
 and DBI modules.
 
-B<New:> Currently, there is an alpha support for ndx index files
-available.
+B<New:> There is a support for B<ndx> and B<ntx> index files
+available. Check the B<prepare_select_with_index> method in this man
+page, or eg/use_index if you are brave and want to help me debugging
+the code.
 
 The following methods are supported by XBase module:
 
@@ -713,11 +730,22 @@ file. The first parameter should be the name of existing dbf file
 This method creates and initializes new object, will also check for
 memo file, if needed.
 
-The parameters can also be specified in the form of hash: values for
-B<name> is then the name of the table, other flags supported are
-B<memofile> to specify non standard name for the associated memo file
-and B<ignorememo> to ignore memo file at all. The second is usefull if
-you've lost the dbt file and you do not need it.
+The parameters can also be specified in the form of hash: value of
+B<name> is then the name of the table, other flags supported are:
+
+B<memofile> specifies non standard name for the associated memo file.
+By default it's the name of the dbf file, with extension dbt or fpt.
+
+B<ignorememo> ignore memo file at all. This is usefull if you've lost
+the dbt file and you do not need it. Default is false.
+
+B<memosep> separator of memo records in the dBase III dbt files, to
+read files created by broken clients, that put there something else
+than the default C<"\x1a\x1a">.
+
+B<nolongchars> prevents XBase to treat the decimal value of character
+fields as high byte of the length -- there are some broken products
+around producing character fields with decimal values set.
 
     my $table = new XBase "table.dbf" or die XBase->errstr;
 	
@@ -752,6 +780,11 @@ make it into some reasonable default.
 		"field_types" => [ "N", "C" ],
 		"field_lengths" => [ 6, 40 ],
 		"field_decimals" => [ 0, undef ]);
+
+Other attributes are B<memofile> for non standard memo file location,
+B<version> to force different version of the dbt (dbt) file. The
+default is the version of the object you create the new from, or 3 if
+you call this as class method (XBase->create).
 
 The new file mustn't exist yet -- XBase will not allow you to
 overwrite existing table. Use B<drop> (or unlink) to delete it first.
@@ -798,8 +831,8 @@ record. If you do not specify any other parameters, all fields are
 returned in the same order as they appear in the file. You can also
 put list of field names after the record number and then only those
 will be returned. The first value of the returned list is always the
-1/0 C<_DELETED> value saying if the record is deleted or not, so on
-success, B<get_record> will never return empty list.
+1/0 C<_DELETED> value saying whether the record is deleted or not, so
+on success, B<get_record> never returns empty list.
 
 =item get_record_nf
 
@@ -875,35 +908,39 @@ a cursor first and then repeatedly call B<fetch> to get next record.
 As parameters, pass list of field names to return, if no parameters,
 the following B<fetch> will return all fields.
 
+=item prepare_select_with_index
+
+The first parameter is the file name of the index file, the rest is
+as above. The B<fetch> will then return records in the ascending
+order, according to the index.
+
+=back
+
 Prepare will return object cursor, the following method are methods of
 the cursor, not of the table.
 
+=over 4
+
 =item fetch
 
-Return the fields of the next available undeleted record. The list
+Returns the fields of the next available undeleted record. The list
 thus doesn't contain the C<_DELETED> flag since you are guaranteed
 that the record is not deleted.
 
 =item fetch_hashref
 
-Return a hash reference of fields for the next non deleted record.
+Returns a hash reference of fields for the next non deleted record.
 
 =item last_fetched
 
 Returns the number of the record last fetched.
 
-=item prepare_select_with_index
-
-The first parameter is the file name of the ndx file, the rest is as
-above. The B<fetch> will then return records in the ascending order,
-according to the index.
-
 =item find_eq
 
-This only works with the index B<prepare_select_with_index>. Will roll
-to the first record what is equal to specified argument, or to the
-first greater if there is not one equal. The following B<fetch>es then
-continue normally.
+This only works with cursor created via B<prepare_select_with_index>.
+Will roll to the first record what is equal to specified argument, or
+to the first greater if there is none equal. The following B<fetch>es
+then continue normally.
 
 =back
 
@@ -992,30 +1029,34 @@ information about the file and about the fields.
 Module XBase::Base(3) defines some basic functions that are inherited
 by both XBase and XBase::Memo(3) module.
 
-=head1 MEMO FIELDS and INDEX FILES
+=head1 MEMO, INDEX, LOCKS
 
 If there is a memo field in the dbf file, the module tries to open
 file with the same name but extension dbt or fpt. It uses module
 XBase::Memo(3) for this. It reads and writes this memo field
 transparently (you do not know about it).
 
-B<New:> There is a small read only support available for ndx index
-files. Please see the eg/use_index file in the distribution for
+B<New:> There is a small read only support available for ndx and ntx
+index files. Please see the eg/use_index file in the distribution for
 examples and ideas. Send me examples of your data files and
 suggestions for interface if you need indexes.
+
+General locking methods are B<locksh>, B<lockex> and B<unlock> for
+shared lock, exclusive lock and unlock. They call flock but you can
+redefine then in XBase::Base package.
 
 =head1 INFORMATION SOURCE
 
 This module is built using information from and article XBase File
 Format Description by Erik Bachmann, URL
 
-    http://www.geocities.com/SiliconValley/Pines/2563/xbase.htm
+	http://www.e-bachmann.dk/docs/xbase.htm
 
 Thanks a lot.
 
 =head1 VERSION
 
-0.065
+0.0693
 
 =head1 AUTHOR
 

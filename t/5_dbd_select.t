@@ -13,7 +13,7 @@ BEGIN	{
 		print "ok 1\n";
 		exit;
 		}
-	print "1..13\n";
+	print "1..16\n";
 	print "DBI loaded\n";
 	}
 
@@ -102,10 +102,16 @@ print "And now get the result\n";
 
 $result = '';
 while (@line = $sth->fetchrow_array())
-	{ print "@line\n"; $result .= "@line\n"; }
+	{ $result .= "@line\n"; }
 
 
-my $expected_result = join '', <DATA>;
+my $expected_result = '';
+
+while (<DATA>)
+	{
+	last if /^__END_DATA__$/;
+	$expected_result .= $_;
+	}
 
 if ($result ne $expected_result)
 	{
@@ -149,6 +155,47 @@ if ($result ne $expected_result)
 	print "not ";
 	}
 print "ok 13\n";
+
+$command = "select facility,roomname from rooms where roomname > ? or facility = ? order by facility";
+print "Prepare command\t`$command'\n";
+$sth = $dbh->prepare($command) or do
+	{
+	print $dbh->errstr();
+	print "not ok 14\n";
+	exit;
+	};
+print "ok 14\n";
+
+print "Execute it with bind parameters ('F', 'Audio')\n";
+$sth->execute('F', 'Audio') or do
+	{
+	print $sth->errstr();
+	print "not ok 15\n";
+	exit;
+	};
+print "ok 15\n";
+
+
+print "And now get the result\n";
+
+$result = '';
+while (@line = $sth->fetchrow_array())
+	{ $result .= "@line\n"; }
+
+$expected_result = '';
+while (<DATA>)
+	{
+	last if /^__END_DATA__$/;
+	$expected_result .= $_;
+	}
+
+if ($result ne $expected_result)
+	{
+	print "Expected:\n$expected_result";
+	print "Got:\n$result";
+	print "not ";
+	}
+print "ok 16\n";
 
 $sth->finish();
 $dbh->disconnect();
@@ -195,3 +242,23 @@ Celco Film
 MacGrfx Main
 Mix J Audio
 BAY 7 Main
+__END_DATA__
+Audio Mach Rm
+Audio Transfer
+Audio Mix F
+Audio Mix G
+Audio Mix H
+Audio Mix J
+Audio Flambe
+Audio Mix C
+Audio Mix B
+Audio Mix A
+Audio Mix D
+Audio Mix E
+Audio ADR-Foley
+Film SCANNING
+Film FILM 2
+Film FILM 1
+Film FILM 3
+Main MacGrfx
+Main Gigapix
