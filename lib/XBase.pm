@@ -20,7 +20,7 @@ use XBase::Base;		# will give us general methods
 use vars qw( $VERSION $errstr $CLEARNULLS @ISA );
 
 @ISA = qw( XBase::Base );
-$VERSION = '0.220';
+$VERSION = '0.233';
 $CLEARNULLS = 1;		# Cut off white spaces from ends of char fields
 
 *errstr = \$XBase::Base::errstr;
@@ -176,6 +176,10 @@ sub read_header {
 			}
 		}
 		elsif ($type eq 'T') {	# time fields
+			# datetime is stored internally as two
+			# four-byte numbers; the first is the day under
+			# the Julian Day System (JDS) and the second is
+			# the number of milliseconds since midnight
 			$rproc = sub {
 				my ($day, $time) = unpack 'VV', $_[0];
 
@@ -207,8 +211,26 @@ sub read_header {
 		elsif ($type eq '0') {    # SNa : field "_NULLFLAGS"
 			$rproc = $wproc = sub { '' };
 		} elsif ($type eq 'Y') {	# Fox money
-			$rproc = sub { unpack('l', pack 'L', unpack 'V', scalar shift)/10000; };
-			$wproc = sub { scalar pack 'V', unpack 'L', pack 'l', (shift)*10000; };
+			$rproc = sub {
+				my ($x, $y) = unpack 'VV', scalar shift;
+				if ($y & 0x80000000) {
+					- ($y ^ 0xffffffff) * (2**32 / 10**$decimal) - (($x - 1) ^ 0xffffffff) / 10**$decimal;
+				} else {
+					$y * (2**32 / 10**$decimal) + $x / 10**$decimal;
+				}
+			};
+			$wproc = sub {
+				my $value = shift;
+				if ($value < 0) {
+					pack 'VV',
+						(-$value * 10**$decimal + 1) ^ 0xffffffff,
+						(-$value * 10**$decimal / 2**32) ^ 0xffffffff;
+				} else {
+					pack 'VV',
+						($value * 10**$decimal) % 2**32,
+						(($value * 10**$decimal) >> 32);
+				}
+			};
 		}
 
 
@@ -236,6 +258,10 @@ sub read_header {
 		__PACKAGE__->Error("Missmatch in header of $self->{'filename'}: record_len $self->{'record_len'} but offset $lastoffset\n");
 		return;
 	}
+	if ($self->{'openoptions'}{'recompute_lastrecno'}) {
+		$self->{num_rec} = int(((-s $self->{'fh'}) - $self->{header_len})
+			/ $self->{record_len});
+	}
 
 	my $hashnames = {};		# create name-to-num_of_field hash
 	@{$hashnames}{ reverse @$names } = reverse ( 0 .. $#$names );
@@ -247,6 +273,7 @@ sub read_header {
 			( $names, $types, $lengths, $decimals,
 			$hashnames, $#$names, $unpacks,
 			$readproc, $writeproc, $CLEARNULLS );
+
 
 	1;	# return true since everything went fine
 }
@@ -726,6 +753,7 @@ sub create {
 	my $header = pack 'CCCCVvvvCCa12CCv', $version, 0, 0, 0, 0,
 		(32 + length $fieldspack), $record_len, 0, 0, 0, '', 0, 0, 0;
 	$header .= $fieldspack;
+	$header .= "\x1a";
 
 	my $tmp = $class->new();
 	my $basename = $options{'name'};
@@ -1028,6 +1056,11 @@ around producing character fields with decimal values set.
     my $table = new XBase "name" => "table.dbf",
 					"ignorememo" => 1;
 
+B<recompute_lastrecno> forces XBase.pm to disbelieve the information
+about the number of records in the header of the dbf file and
+recompute the number of records. Use this only if you know that
+some other software of yours produces incorrect headers.
+
 =item close
 
 Closes the object/file, no arguments.
@@ -1319,9 +1352,9 @@ translation is done. The numbers are converted to Perl numbers. The
 date fields are returned as 8 character string of the 'YYYYMMDD' form
 and when inserting the date, you again have to provide it in this
 form. No checking for the validity of the date is done. The datetime
-field is returned in the number of seconds since 1970/1/1, possibly
-with decimal part (since it allows precision up to 1/1000 s). To get
-the fields, use the gmtime (or similar) Perl function.
+field is returned in the number of (possibly negative) seconds since
+1970/1/1, possibly with decimal part (since it allows precision up to
+1/1000 s). To get the fields, use the gmtime (or similar) Perl function.
 
 If there is a memo field in the dbf file, the module tries to open
 file with the same name but extension dbt, fpt or smt. It uses module
@@ -1353,11 +1386,11 @@ Thanks a lot.
 
 =head1 VERSION
 
-0.220
+0.233
 
 =head1 AUTHOR
 
-(c) 1997--2002 Jan Pazdziora, adelton@fi.muni.cz,
+(c) 1997--2003 Jan Pazdziora, adelton@fi.muni.cz,
 http://www.fi.muni.cz/~adelton/ at Faculty of Informatics, Masaryk
 University in Brno, Czech Republic
 
