@@ -2,17 +2,20 @@
 
 use strict;
 
-BEGIN	{ $| = 1;
-	print "Load DBI\n";
+BEGIN	{
+	$| = 1;
 	eval 'use DBI';
 	if ($@ ne '')
 		{
 		print "1..0\n";
 		print "DBI couldn't be loaded, aborting test\n";
+		print "Error returned from eval was:\n", $@;
 		print "ok 1\n";
 		exit;
 		}
-	print "1..7\n"; }
+	print "1..7\n";
+	print "DBI loaded\n";
+	}
 
 END	{ print "not ok 1\n" unless $::DBIloaded; }
 
@@ -58,8 +61,8 @@ my $dbh = DBI->connect("dbi:XBase:$dir") or do
 	};
 print "ok 3\n";
 
-my $command = 'delete from write where facility != "Audio"';
-print "Prepare command '$command'\n";
+my $command = 'update write set roomname = "ABC" where facility != "Audio"';
+print "Prepare command `$command'\n";
 my $sth = $dbh->prepare($command) or do
 	{
 	print $dbh->errstr();
@@ -118,6 +121,23 @@ $dbh->disconnect();
 1;
 
 __DATA__
+ABC 
+ABC Main
+ABC Main
+ABC Main
+ABC Main
+ABC Main
+ABC Main
+ABC Main
+ABC Main
+ABC Main
+ABC Main
+ABC Main
+ABC Main
+ABC Main
+ABC Main
+ABC Main
+ABC Main
 Mix A Audio
 Mix B Audio
 Mix C Audio
@@ -126,8 +146,20 @@ Mix E Audio
 ADR-Foley Audio
 Mach Rm Audio
 Transfer Audio
+ABC Main
+ABC Main
 Flambe Audio
+ABC Film
+ABC Film
+ABC Film
+ABC Film
 Mix F Audio
 Mix G Audio
 Mix H Audio
+ABC Film
+ABC Film
+ABC Main
 Mix J Audio
+ABC Main
+ABC Main
+ABC 

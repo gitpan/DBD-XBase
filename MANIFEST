@@ -15,12 +15,12 @@ lib/XBase/cdx.pm
 t/1_header.t
 t/2_read.t
 t/3_write.t
-t/4_create.t
-t/5_drop.t
-t/6_more_read.t
-t/7_dbd_select.t
-t/8_dbd_sel_where.t
-t/9_dbd_delete.t
+t/4_create_drop.t
+t/5_dbd_select.t
+t/6_dbd_delete.t
+t/7_dbd_update.t
+t/8_dbd_insert.t
+t/9_dbd_create.t
 t/dump.to.dbf
 t/rooms.cdx
 t/rooms.dbf
@@ -28,5 +28,3 @@ t/test.dbf
 t/test.dbf.dump
 t/test.dbt
 t/test.dbt.dump
-t/write.dbf
-t/write.dbt

@@ -1,385 +1,459 @@
 
+# ####################
+# Parsing SQL commands
+
+package XBase::SQL::Expr;
 package XBase::SQL;
 
-use strict;
-use vars qw( $VERSION );
-$VERSION = '0.0343';
+### BEGIN { eval { use locale; }; }
 
-sub parse_command
+use strict;
+use vars qw( $VERSION $DEBUG %COMMANDS );
+
+$VERSION = '0.058';
+$DEBUG = 0;
+
+# ##################
+# Regexp definitions
+
+
+my %TYPES = ( 'char' => 'C', 'num' => 'N', 'numeric' => 'N',
+		'boolean' => 'L', 'blob' => 'M', 'memo' => 'M',
+		'float' => 'F', 'date' => 'D' );
+
+%COMMANDS = (
+	'COMMANDS' => 	' SELECT | INSERT | DELETE | UPDATE | CREATE ',
+	'SELECT' =>	' select SELECTFIELDS from TABLE WHERE ? ',
+	'INSERT' =>	q' insert into TABLE INSERTFIELDS ? values
+						\( INSERTCONSTANTS \) ',
+	'DELETE' =>	' delete from TABLE WHERE ? ',
+	'UPDATE' =>	' update TABLE set SETCOLUMNS WHERE ? ',
+	'CREATE' =>	q' create table TABLE \( COLUMNDEF ( , COLUMNDEF ) * \) ',
+
+	'TABLE' =>	q'\w+',
+	'FIELDNAME' =>	q'[a-z]+',
+	'EXPFIELDNAME' => 'FIELDNAME',
+	'SELECTFIELDS' =>	'SELECTALL | FIELDNAME ( , FIELDNAME ) *',
+	'SELECTALL' =>	q'\*',	
+	'WHERE' =>	'where WHEREEXPR',
+	'WHEREEXPR' =>	'BOOLEAN',
+	'BOOLEAN' =>	q'\( BOOLEAN \) | RELATION ( ( and | or ) BOOLEAN ) *',
+	'RELATION' =>	'EXPFIELDNAME RELOP ARITHMETIC',
+	'RELOP' => [ qw{ == | = | <= | >= | <> | != | < | > } ],
+	
+	'ARITHMETIC' => [ qw{ \( ARITHMETIC \)
+		| ( NUMBER | STRING | EXPFIELDNAME ) ( ( \+ | \- | \* | \/ | \% ) ARITHMETIC ) ? } ],
+	'NUMBER' => q'-?\d*\.?\d+',
+	'STRING' => [ qw{ STRINGDBL | STRINGSGL } ] ,
+	'STRINGDBL' => q' \\" (\\\\\\\\|\\\\"|[^\\"])* \\" ',
+	'STRINGSGL' => q! \\' (\\\\\\\\|\\\\'|[^\\'])* \\' !,
+	'ORDER' => [ qw{ order by FIELDNAME } ],
+	'INSERTCONSTANTS' => [ qw{ CONSTANT ( }, ',', qw{ INSERTCONSTANTS ) * } ],
+	'CONSTANT' => [ qw{ NUMBER | STRING } ],
+	'INSERTFIELDS' =>	'\( FIELDNAME ( , FIELDNAME ) * \)',
+	
+	'SETCOLUMNS' => 'SETCOLUMN ( , SETCOLUMN ) *',
+	'SETCOLUMN' => 'FIELDNAME = ARITHMETIC',
+	
+	'TYPELENGTH' => q'\d+',
+	'TYPEDEC' => q'\d+',
+	'COLUMNDEF' => 'FIELDNAME FIELDTYPE',
+	'FIELDTYPE' => 'TYPECHAR | TYPENUM | TYPEBOOLEAN | TYPEMEMO | TYPEDATE',
+	'TYPECHAR' => q'char ( \( TYPELENGTH \) ) ?',
+	'TYPENUM' => q'( num | numeric | float ) ( \( TYPELENGTH ( , TYPEDEC ) ? \) ) ?',
+	'TYPEBOOLEAN' => q'boolean | logical',
+	'TYPEMEMO' => q'memo | blob',
+	'TYPEDATE' => q'date',
+	);
+
+my %STORE = (
+	'SELECT' => sub { shift->{'command'} = 'select'; },
+	'SELECTALL' => 'selectall',
+	'SELECTFIELDS FIELDNAME' => 'selectfields',
+	'SELECT TABLE' => 'table',
+
+	'INSERT' => sub { shift->{'command'} = 'insert'; },
+	'INSERT TABLE' => 'inserttable',
+	'INSERTCONSTANTS CONSTANT' => sub { push @{shift->{'insertvalues'}},
+		(shift) . '->value()'; },
+	'INSERTFIELDS FIELDNAME' => 'insertfields',
+
+	'DELETE' => sub { shift->{'command'} = 'delete'; },
+	'DELETE TABLE' => 'table',
+
+	'INSERT' => sub { shift->{'command'} = 'insert'; },
+	'INSERT TABLE' => 'table',
+
+	'UPDATE' => sub { shift->{'command'} = 'update'; },
+	'UPDATE TABLE' => 'table',
+	'UPDATE SETCOLUMN FIELDNAME' => 'updatefields',
+	'UPDATE SETCOLUMN ARITHMETIC' => sub { my ($self, @expr) = @_;
+		my $line = "sub { my (\$TABLE, \$HASH) = \@_; my \$e = XBase::SQL::Expr->other( @expr ); \$e->value(); }";
+		### print "Evaling $line\n";
+		my $fn = eval $line;
+		if ($@) { push @{$self->{'updaterror'}}, $@; }
+		else { push @{$self->{'updaterror'}}, undef;
+			push @{$self->{'updatevalues'}}, $fn; }},
+
+	'CREATE' => sub { shift->{'command'} = 'create'; },
+	'CREATE TABLE' => 'table',
+	'CREATE COLUMNDEF FIELDNAME' => 'createfields',
+	'CREATE COLUMNDEF FIELDTYPE' => sub { my $self = shift;
+		my ($type, $len, $dec) = @_[0, 2, 4];
+		push @{$self->{'createtypes'}}, $TYPES{lc $type};
+		push @{$self->{'createlengths'}}, $len;
+		push @{$self->{'createdecimals'}}, $dec; },
+
+	'WHEREEXPR' => sub { my ($self, $expr) = @_;
+		### print "Evaling $expr\n";
+		my $fn = eval "sub { my (\$TABLE, \$HASH) = \@_; $expr; }";
+		if ($@) { $self->{'whereerror'} = $@; }
+		else { $self->{'wherefn'} = $fn; }
+		},
+	);
+
+my %SIMPLIFY = (
+	'STRING' => sub { my $e = (get_strings(@_))[1];
+				$e =~ s/'/\\'/g;
+					"XBase::SQL::Expr->string('$e')"; },
+	'NUMBER' => sub { my $e = (get_strings(@_))[0];
+					"XBase::SQL::Expr->number('\Q$e\E')"; },
+	'EXPFIELDNAME' => sub { my $e = (get_strings(@_))[0];
+					"XBase::SQL::Expr->field('$e', \$TABLE, \$HASH)"; },
+	'FIELDNAME' => sub { uc ((get_strings(@_))[0]); },
+	'WHEREEXPR' => sub { join ' ', get_strings(@_); },
+	'RELOP' => sub { my $e = (get_strings(@_))[0];
+			if ($e eq '=') { $e = '=='; }
+			elsif ($e eq '<>') { $e = '!=';} $e; },
+	);
+
+my %ERRORS = (
+	'TABLE' => 'Table name',
+	'RELATION' => 'Relation',
+	'ARITHMETIC' => 'Arithmetic expression',
+	'from' => 'From specification',
+	'into' => 'Into specification',
+	'values' => 'Values specification',
+	'\\(' => 'Left paren',
+	'\\)' => 'Right paren',
+	'\\*' => 'Star',
+	'\\"' => 'Double quote',
+	"\\'" => 'Single quote',
+	'STRING' => 'String',
+	'SELECTFIELDS' => 'Columns to select',
+	);
+
+sub parse
+	{
+	my ($class, $string) = @_;
+	my $self = bless {}, $class;
+
+	my ($srest, $error, $errstr, @result) = match($string, 'COMMANDS');
+	$srest =~ s/^\s+//s;
+
+	if ($srest ne '' and not $error)
+		{ $error = 1; $errstr = 'Extra characters in SQL command'; }
+	if ($error)
+		{
+		if (not defined $errstr)
+			{ $errstr = 'Error in SQL command'; }
+		substr($srest, 40) = '...' if length $srest > 44;
+		$self->{'errstr'} = "$errstr near `$srest'";
+		### print "$self->{'errstr'}\n";
+		}
+	else
+		{
+		### print_result(\@result);
+		$self->store_results(\@result, \%STORE);
+		### use Data::Dumper; print Dumper $self;
+		}
+	$self;
+	}
+sub store_results
+	{
+	my ($self, $result, $store) = @_;
+
+	my $i = 0;
+	while ($i < @$result)
+		{
+		my ($regexp, $match) = @{$result}[$i, $i + 1];
+		my %nstore = %$store;
+
+		my ($tag, $value);
+		while (($tag, $value) = each %$store)
+			{
+			my $oldtag = $tag;
+			next unless $tag =~ s/^\Q$regexp\E($|\s+)//;
+
+			delete $nstore{$oldtag};
+			if ($tag eq '')
+				{
+				my @result;
+				if (ref $match) { @result = get_strings($match); }
+				else { @result = $match; }
+				### print "Storing @result to $value\n";
+				if (ref $value eq 'CODE')
+					{ &{$value}($self, @result); }
+				else
+					{ push @{$self->{$value}}, @result; }
+				}
+			else { $nstore{$tag} = $value; }
+			}
+	
+		if (ref $match)
+			{ $self->store_results($match, \%nstore); }
+		$i += 2;
+		}
+	}
+sub get_strings
+	{
+	my @strings = @_;
+	if (@strings == 1 and ref $strings[0])
+		{ @strings = @{$strings[0]}; }
+	my @result;	my $i = 1;
+	while ($i < @strings)
+		{
+		if (ref $strings[$i])
+			{ push @result, get_strings($strings[$i]); }
+		else
+			{ push @result, $strings[$i]; }
+		$i += 2;
+		}
+	@result;
+	}
+sub print_result
+	{
+	my $result = shift;
+	my @result = @$result;
+	my @before = @_;
+	my $i = 0;
+	while ($i < @result)
+		{
+		my ($regexp, $string) = @result[$i, $i + 1];
+		if (ref $string)
+			{ print_result($string, @before, $regexp); }
+		else
+			{ print "$string:\t @before $regexp\n"; }
+		$i += 2;
+		}
+	}
+sub match
+	{
+	my $string = shift;
+	my @regexps = @_;
+
+	my $origstring = $string;
+
+	my $title;
+
+	if (@regexps == 1 and defined $COMMANDS{$regexps[0]})
+		{
+		$title = $regexps[0];
+		my $c = $COMMANDS{$regexps[0]};
+		@regexps = expand( ( ref $c ) ? @$c :
+					grep { $_ ne '' } split /\s+/, $c);
+		}
+
+	my $modif;
+	if (@regexps and $regexps[0] eq '?' or $regexps[0] eq '*')
+		{ $modif = shift @regexps; }
+
+### { local $^W = 0; print "Match: $title: $modif; `@regexps' on string `$string'\n"; }
+
+	my @result;
+	my $i = 0;
+	while ($i < @regexps)
+		{
+		my $regexp = $regexps[$i];
+		my ($error, $errstr, @r);
+		if (ref $regexp)
+			{ ($string, $error, $errstr, @r) = match($string, @$regexp); }
+		elsif ($regexp eq '|')
+			{ $i = $#regexps; next; }
+		elsif (defined $COMMANDS{$regexp})
+			{ ($string, $error, $errstr, @r) = match($string, $regexp); }
+		elsif ($string =~ s/^\s*?($regexp)($|\b|(?=\W))//si)
+			{ @r = $1; }
+		else
+			{ $error = 1; }
+
+		if (defined $error)
+			{
+			if ($origstring eq $string)
+				{
+				while ($i < @regexps)
+					{ last if $regexps[$i] eq '|'; $i++; }
+				next if $i < @regexps;
+				last if defined $modif;
+				}
+	
+			if (not defined $errstr)
+				{
+				if (defined $ERRORS{$regexp})
+					{ $errstr = $ERRORS{$regexp}; }
+				elsif (defined $title and defined $ERRORS{$title})
+					{ $errstr = $ERRORS{$title}; }
+				$errstr .= ' expected' if defined $errstr;
+				}
+
+			return ($string, 1, $errstr, @result);
+			}
+	
+		if (ref $regexp)
+			{ push @result, @r; }
+		elsif (@r > 1)
+			{ push @result, $regexp, [ @r ]; }
+		else
+			{ push @result, $regexp, $r[0]; }
+		}
+	continue
+		{
+		$i++;
+		if (defined $modif and $modif eq '*' and $i >= @regexps)
+			{ $origstring = $string; $i = 0; }
+		}
+
+	if (defined $title and defined $SIMPLIFY{$title})
+		{
+		my $m = $SIMPLIFY{$title};
+		@result = (( ref $m eq 'CODE' ) ? &{$m}(\@result) : $m);
+		}
+	return ($string, undef, undef, @result);
+	}
+
+sub expand
+	{
+	my @result;
+	my $i = 0;
+	while ($i < @_)
+		{
+		my $t = $_[$i];
+		if ($t eq '(')
+			{
+			$i++;
+			my $begin = $i;
+			my $nest = 1;
+			while ($i < @_ and $nest)
+				{
+				my $t = $_[$i];
+				if ($t eq '(') { $nest++; }
+				elsif ($t eq ')') { $nest--; }
+				$i++;
+				}
+			$i--;
+			push @result, [ expand(@_[$begin .. $i - 1]) ];	
+			}
+		elsif ($t eq '?' or $t eq '*')
+			{
+			my $prev = pop @result;
+			push @result, [ $t, ( ref $prev ? @$prev : $prev ) ];
+			}
+		else
+			{ push @result, $t; }
+		$i++;
+		}
+	@result;
+	}
+
+
+# #######################################
+# Implementing methods in SQL expressions
+
+package XBase::SQL::Expr;
+
+use strict;
+
+use overload
+	'+'  => sub { XBase::SQL::Expr->number($_[0]->value + $_[1]->value); },
+	'-'  => sub { my $a = $_[0]->value - $_[1]->value; $a = -$a if $_[2];
+			XBase::SQL::Expr->number($a); },
+	'/'  => sub { my $a = ( $_[2] ? $_[0]->value / $_[1]->value
+				: $_[1]->value / $_[0]->value );
+			XBase::SQL::Expr->number($a); },
+	'%'  => sub { my $a = ( $_[2] ? $_[0]->value % $_[1]->value
+				: $_[1]->value % $_[0]->value );
+			XBase::SQL::Expr->number($a); },
+	'<'  => \&less,
+	'<=' => \&lesseq,
+	'>'  => sub { $_[1]->less(@_[0, 2]); },
+	'>=' => sub { $_[1]->lesseq(@_[0, 2]); },
+	'!=' => \&notequal,
+	'<>' => \&notequal,
+	'==' => sub { my $a = shift->notequal(@_); return ( $a ? 0 : 1); },
+	'""' => sub { ref shift; },
+	;
+
+sub new
+	{ bless {}, shift; }
+sub value
+	{ shift->{'value'}; }
+
+sub field
+	{
+	my ($class, $field, $table, $values) = @_;
+	my $self = $class->new;
+	$self->{'field'} = $field;
+	$self->{'value'} = $values->{$field};
+
+	my $type = $table->field_type($field);
+	if ($type eq 'N')	{ $self->{'number'} = 1; }
+	else			{ $self->{'string'} = 1; }
+	$self;
+	}
+sub string
+	{
+	my $self = shift->new;
+	$self->{'value'} = shift;
+	$self->{'string'} = 1;
+	$self;
+	}
+sub number
+	{
+	my $self = shift->new;
+	$self->{'value'} = shift;
+	$self->{'number'} = 1;
+	$self;
+	}
+sub other
 	{
 	my $class = shift;
-	local $_ = shift;
-
-	my $self = bless {}, $class;
-	my $errstr = undef;
-
-	s/^\s+//;
-
-	my $command;
-	if (s/^(select|delete|update|insert)\s+//s)
-		{
-		$self->{'string'} = $_;
-		$self->{'command'} = $+;
-		my $exec = 'parse_' . $self->{'command'};
-		$self->$exec();
-		}
+	my $other = shift;
+	$other;
+	}
+#
+# Function working on Expr objects
+#
+sub less
+	{
+	my ($self, $other, $reverse) = @_;
+	my $answer;
+	if (defined $self->{'string'} or defined $other->{'string'})
+		{ $answer = ($self->value lt $other->value); }
 	else
-		{
-		$self->{'string'} = $_;
-		$self->{'errstr'} = "No supported SQL command found";
-		}
-	if (defined $self->{'errstr'} and defined $self->{'string'})
-		{
-		$self->{'errstr'} .= " at '" .
-			substr($self->{'string'}, 0, 16) . "'";
-		}
-	$self;
+		{ $answer = ($self->value < $other->value); }
+	return -$answer if $reverse;
+	$answer;
 	}
-
-
-sub parse_select
+sub lesseq
 	{
-	my $self = shift;
-	local $_ = $self->{'string'};
-
-	if (s/^\*\s+|\(\s*\*\s*\)\s*//s)
-		{ $self->{'selectall'} = 1; }
-	elsif (s/^([\w]+(?:\s*,\s*[\w]+)*)\s+//s)
-		{
-		$self->{'selectfields'} = [ split /\s*,\s*/, $+ ];
-		}
+	my ($self, $other, $reverse) = @_;
+	my $answer;
+	if (defined $self->{'string'} or defined $other->{'string'})
+		{ $answer = ($self->value le $other->value); }
 	else
-		{ $self->{'errstr'} = "No column specification found"; return $self; }
-
-	unless (s/^from\s+//si)
-		{
-		$self->{'string'} = $_;
-		$self->{'errstr'} = "From specification missing";
-		return $self;
-		}
-
-	unless (s/^([\w.]+)(?:$|\s+)//s)
-		{
-		$self->{'string'} = $_;
-		$self->{'errstr'} = "Table name expected";
-		return $self;
-		}
-
-	$self->{'table'} = $+;
-	$self->{'string'} = $_;
-
-	return $self;
+		{ $answer = ($self->value <= $other->value); }
+	return -$answer if $reverse;
+	$answer;
 	}
-
-sub parse_delete
+sub notequal
 	{
-	my $self = shift;
-	local $_ = $self->{'string'};
-	unless (s/^from\s+//si)
-		{
-		$self->{'string'} = $_;
-		$self->{'errstr'} = "From specification missing";
-		return $self;
-		}
-
-	unless (s/^([\w.]+)(?:$|\s+)//s)
-		{
-		$self->{'string'} = $_;
-		$self->{'errstr'} = "Table name expected";
-		return $self;
-		}
-
-	$self->{'table'} = $+;
-	$self->{'string'} = $_;
-
-	return $self;
-	}
-
-sub parse_insert
-	{
-	my $self = shift;
-	local $_ = $self->{'string'};
-	unless (s/^into\s+//si)
-		{
-		$self->{'string'} = $_;
-		$self->{'errstr'} = "Into specification missing";
-		return $self;
-		}
-
-	unless (s/^([\w.]+)(?:$|\s+)//s)
-		{
-		$self->{'string'} = $_;
-		$self->{'errstr'} = "Table name expected";
-		return $self;
-		}
-	
-	$self->{'table'} = $+;
-
-	if (s/^\(([\w]+(?:\s*,\s*[\w]+)*)\s*\)//s)
-		{ $self->{'insertfields'} = [ split /\s*,\s*/, $+ ]; }
-
-
-	unless (s/^values\s+//si)
-		{
-		$self->{'string'} = $_;
-		$self->{'errstr'} = "Values specification missing";
-		return $self;
-		}
-
-
-	$self->{'string'} = $_;
-	return $self;
-	}
-
-
-my %STRINGOP = ( '=' => 'eq', '<' => 'lt', '>' => 'gt', '<=' => 'le',
-                                '>=' => 'ge', '<>' => 'ne', '!=' => 'ne' );
-my %NUMOP = ( '=' => '==' );
-
-sub parse_conditions
-	{
-	my $self = shift;
-	if ($self->{'command'} eq 'select')
-		{
-		if (defined $self->{'selectall'})
-			{
-			$self->{'selectfields'} = [ $self->{'xbase'}->field_names() ];
-			}
-		elsif (defined $self->{'selectfields'})
-			{
-			my $field;
-			for $field (@{$self->{'selectfields'}})
-				{
-				unless (defined $self->{'xbase'}->field_name_to_num(uc $field))
-					{
-					$self->{'errstr'} = "Column $field does not exist in table $self->{'table'}";
-					return;
-					}
-				$field = uc $field;
-				}
-			}
-		else { die "Huh -- no fields -- fatal problem!"; }
-		}
-	elsif ($self->{'command'} eq 'insert')
-		{
-
-		}
-
-	if ($self->{'string'} =~ s/^where(\s+|(?=\())//si)
-		{
-		$self->parse_boolean();
-		return $self if defined $self->{'errstr'};
-		$self->{'whereexpression'} = $self->{'expression'};
-		delete $self->{'expression'};
-
-		my $command = '';
-		my $field; 
-		for $field (@{$self->{'whereexpression'}})
-			{       
-			if (ref $field) 
-				{       
-				if ($field->[0] eq 'op')
-					{
-					if ($field->[2] eq 's') 
-						{ $command .= ' ' . $STRINGOP{$field->[1]} . ' '; }
-					elsif ($field->[1] eq '=')
-						{ $command .= ' == '; } 
-					else
-						{ $command .= ' ' . $field->[1] . ' '; }
-					}
-				elsif ($field->[0] eq 'field')
-					{ $command .= q! $HASH->{'! . (uc $field->[1]) . q!'} !; }
-				elsif ($field->[0] eq 'string' or $field->[0] eq 'number' or $field->[0] eq 'arop')
-					{ $command .= ' ' . $field->[1] . ' '; }
-				}               
-			else            
-				{
-				if ($field eq 'left')
-					{ $command .= ' ('; }
-				if ($field eq 'right')
-					{ $command .= ') '; }
-				if ($field eq 'and')
-					{ $command .= ' and '; }
-				if ($field eq 'or')
-					{ $command .= ' or '; }
-				}               
-			}               
-		$command = "sub { my \$HASH = shift; $command; }";
-		### print STDERR "Where expression: $command\n";
-		my $fn = eval $command;
-		if ($@)
-			{
-			$self->{'errstr'} = "Eval on where expression $command failed: $@";
-			return $self;
-			}
-		$self->{'wherefn'} = $fn;
-		}
-
-	if (not defined $self->{'errstr'} and
-		$self->{'string'} =~ s/^order\s+by(\s+|(?=\())//si)
-		{
-		$self->parse_order_by();
-		}
-        if (not defined $self->{'errstr'} and $self->{'string'} ne '')
-		{
-		$self->{'errstr'} = ( /^\)/ ?
-			"Extra right bracket found" :
-			"Unknown characters in SQL command");
-		}
-	if (defined $self->{'errstr'} and defined $self->{'string'})
-		{
-		$self->{'errstr'} .= " at '" .
-			substr($self->{'string'}, 0, 16) . "'";
-		}
-	$self;
-	}
-
-sub parse_boolean
-	{
-	my $self = shift;
-	local $_ = $self->{'string'};
-
-	my $first = 1;
-	my $quotes = 0;
-
-	while (s/^\(\s*//)
-		{ $quotes++; push @{$self->{'expression'}}, 'left'; }
-
-	$self->{'string'} = $_;
-	while ($self->parse_relation())
-		{
-		return $self if defined $self->{'errstr'};
-
-		if ($self->{'string'} eq $_)	# nothing new found
-			{
-			if ($first)
-				{
-				$self->{'errstr'} = "No expression found";
-				return $self;
-				}
-			last;
-			}
-
-		$first = 0;
-
-		$_ = $self->{'string'};
-
-		while ($quotes > 0 and s/^\)\s*//s)
-			{ $quotes--; push @{$self->{'expression'}}, 'right'; }
-		
-		if (s/^(and|or)(?:\s+|(?=\())//si)
-			{ push @{$self->{'expression'}}, $1; }
-		else
-			{ last; }
-
-		while (s/^\(\s*//)
-			{ $quotes++; push @{$self->{'expression'}}, 'left';}
-
-		$self->{'string'} = $_;
-		}
-
-	while ($quotes > 0 and s/^\)\s*//)
-		{ $quotes--; push @{$self->{'expression'}}, 'right'; }
-
-	$self->{'string'} = $_;
-	if ($quotes > 0)
-		{ $self->{'errstr'} = "Right bracket missing"; }
-
-	$self;
-	}
-
-sub parse_relation
-	{
-	my $self = shift;
-	local $_ = $self->{'string'};
-
-	if (s/^([\w]+)\s*//)
-		{
-		unless (defined $self->{'xbase'}->field_name_to_num(uc $+))
-			{
-			$self->{'errstr'} = "Column $+ does not exist in table $self->{'table'}";
-			return;
-			}
-		push @{$self->{'expression'}}, [ 'field', $+ ];
-		}
+	my ($self, $other) = @_;
+	if (defined $self->{'string'} or defined $other->{'string'})
+		{ ($self->value ne $other->value); }
 	else
-		{ $self->{'errstr'} = "Field name not found"; return $self; }
-
-	my $type = $self->{'xbase'}->field_types($self->{'xbase'}->field_name_to_num($+));
-	$type = (($type =~ /^[CML]$/) ? 's' : 'd');
-
-	my $operator;
-	unless (s/^(==?|<=|>=|<>|!=|<|>)\s*//)
-		{
-		$self->{'string'} = $_;
-		$self->{'errstr'} = "Operator not found";
-		return $self;
-		}
-
-	push @{$self->{'expression'}}, [ 'op', $+, $type ];
-
-	$self->{'string'} = $_;
-	$self->parse_arithmetic();
-	}
-
-sub parse_arithmetic
-	{
-	my $self = shift;
-	local $_ = $self->{'string'};
-
-	my $prevop = $#{$self->{'expression'}};
-
-	my $quotes = 0;
-	
-	while (s/^\(\s*//s)
-		{ $quotes++; push @{$self->{'expression'}}, 'left'; }
-
-	if (s/^(["'])((\\\\|\\\1|.)*?)\1//s)
-		{
-		my $string = $2;
-		if ($1 eq '"')
-			{ $string =~ s/'/\\'/gs; }
-		push @{$self->{'expression'}}, [ 'string', "'$string'" ];
-		if (ref $self->{'expression'}[$prevop] and
-				$self->{'expression'}[$prevop][0] eq 'op')
-			{ $self->{'expression'}[$prevop][2] = 's' }
-		}
-	elsif (s/^(-?(\d*\.)?\d+)//)
-		{
-		push @{$self->{'expression'}}, [ 'number', $1 ];
-		}
-	elsif (s/^[\w]+//)
-		{
-		push @{$self->{'expression'}}, [ 'field', $& ];
-		}
-	else
-		{
-		$self->{'string'} = $_;
-		$self->{'errstr'} = "No field name, string or number found";
-		return $self;
-		}
-
-	s/^\s*//s;
-
-	if (s!^[-+/%]!!)
-		{
-		push @{$self->{'expression'}}, [ 'arop', $& ];
-		s/^\s*//s;
-		$self->{'string'} = $_;
-		$self->parse_arithmetic();
-		return $self if defined $self->{'errstr'};
-		$_ = $self->{'string'};
-		}
-
-	while ($quotes > 0 and s/^\)\s*//)
-		{ $quotes--; push @{$self->{'expression'}}, 'right'; }
-
-	$self->{'string'} = $_;
-	if ($quotes != 0)
-		{ $self->{'errstr'} = "Right bracket missing"; }
-
-	return $self;
+		{ ($self->value != $other->value); }
 	}
 
 
 1;
+
