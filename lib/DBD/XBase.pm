@@ -19,7 +19,7 @@ use vars qw( $VERSION @ISA @EXPORT $err $errstr $drh $sqlstate );
 
 require Exporter;
 
-$VERSION = '0.110';
+$VERSION = '0.130';
 
 $err = 0;
 $errstr = '';
@@ -156,7 +156,14 @@ sub rollback
 	}
 
 sub disconnect
-	{ 1; }
+	{
+	my $dbh = shift;
+	foreach my $xbase (values %{$dbh->{'xbase_tables'}}) {
+		$xbase->close;
+		delete $dbh->{'xbase_tables'}{$xbase};
+		}
+	1;
+	}
 
 sub table_info
 	{
@@ -177,7 +184,7 @@ my @TYPE_INFO_ALL = (
 	[ 'NUMERIC', DBI::SQL_FLOAT, 0, '', '', 'number of digits', 1, 0, 2, 0, 0, 0, undef, 0, undef ],
 	[ 'BOOLEAN', DBI::SQL_BINARY, 0, '', '', 'number of digits', 1, 0, 2, 0, 0, 0, undef, 0, undef ],
 	[ 'DATE', DBI::SQL_DATE, 0, '', '', 'number of digits', 1, 0, 2, 0, 0, 0, undef, 0, undef ],
-	[ 'BLOB', DBI::SQL_LONGVARBINARY, 0, '', '', 'number of digits', 1, 0, 2, 0, 0, 0, undef, 0, undef ],
+	[ 'BLOB', DBI::SQL_LONGVARBINARY, 0, '', '', 'number of bytes', 1, 0, 2, 0, 0, 0, undef, 0, undef ],
 	);
 
 my %TYPE_INFO_TYPES = map { ( $TYPE_INFO_ALL[$_][0] => $_ ) } ( 1 .. $#TYPE_INFO_ALL );
@@ -318,7 +325,7 @@ sub execute
 	my $wherefn = $parsed_sql->{'wherefn'};
 	my @fields = @{$parsed_sql->{'fields'}} if defined $parsed_sql->{'fields'};
 	### use Data::Dumper; print STDERR Dumper $parsed_sql;
-	my $rows = 0;
+	my $rows;
 
 	if ($command eq 'select')
 		{
@@ -370,9 +377,10 @@ sub execute
 			my $last = $xbase->last_record;
 			for (my $i = 0; $i <= $last; $i++)
 				{
-				if (not ($xbase->get_record_fn($i, 0))[0])
+				if (not ($xbase->get_record_nf($i, 0))[0])
 					{
 					$xbase->delete_record($i);
+					$rows = 0 unless defined $rows;
 					$rows++;
 					}
 				}
@@ -384,6 +392,7 @@ sub execute
 				{
 				next unless &{$wherefn}($xbase, $values, $param, 0);
 				$xbase->delete_record($cursor->last_fetched);
+				$rows = 0 unless defined $rows;
 				$rows++;
 				}
 			}
@@ -398,6 +407,7 @@ sub execute
 			my %newval;
 			@newval{ @fields } = &{$parsed_sql->{'updatefn'}}($xbase, $values, $param, 0);
 			$xbase->update_record_hash($cursor->last_fetched, %newval);
+			$rows = 0 unless defined $rows;
 			$rows++;
 			}
 		}
@@ -406,8 +416,8 @@ sub execute
 		$xbase->drop;
 		$rows = -1;
 		}
-	$sth->{'xbase_rows'} = $rows;
-	return $rows ? $rows : '0E0';
+	$sth->{'xbase_rows'} = $rows if defined $rows;
+	return defined $rows ? ( $rows ? $rows : '0E0' ) : -1;
 	}
 sub fetch
 	{
@@ -505,19 +515,21 @@ __END__
     while (@data = $sth->fetchrow_array())
 		{ ## further processing }
 
-    $dbh->do('update table set name = "Joe" where id = 45');
+    $dbh->do('update table set name = ? where id = 45', {}, 'krtek');
 
 =head1 DESCRIPTION
 
 DBI compliant driver for module XBase. Please refer to DBI(3)
-documentation for how to actually use the module.
-In the B<connect> call, specify the directory for a database name.
-This is where the DBD::XBase will look for the tables (dbf and other
-files).
+documentation for how to actually use the module. In the B<connect>
+call, specify the directory containing the dbf files (and other, memo,
+etc.) as the third part of the connect string. It defaults to the
+current directory.
 
 Note that with dbf, there is no database server that the driver
 would talk to. This DBD::XBase calls methods from XBase.pm module to
-read and write the files on the disk directly.
+read and write the files on the disk directly, so any limitations and
+features of XBase.pm apply to DBD::XBase as well. DBD::XBase basically
+adds SQL, DBI compliant interface to XBase.pm.
 
 The DBD::XBase doesn't make use of index files at the moment. If you
 really need indexed access, check XBase(3) for notes about ndx
@@ -547,9 +559,9 @@ supported. Examples:
 
 You can use bind parameters in the where clause, as the last example
 shows. The actual value has to be supplied via bind_param or in the
-call to execute, see DBI(3) for details. To check for NULL values in
-the C<where> expression, use C<id is null> and C<id is not null>, not
-C<id == null>.
+call to execute or do, see DBI(3) for details. To check for NULL
+values in the C<where> expression, use C<id is null> and C<id is
+not null>, not C<id == null>.
 
 =head2 delete
 
@@ -600,7 +612,8 @@ types. Example:
 
 The allowed types are
 
-    char num numeric int integer float boolean blob memo date
+    char num numeric int integer float boolean blob memo date time
+    datetime
 
 Some of them are synonyms. They are of course converted to appropriate
 XBase types.
@@ -615,11 +628,11 @@ Example:
 
 =head1 VERSION
 
-0.110
+0.130
 
 =head1 AUTHOR
 
-(c) 1997--1998 Jan Pazdziora, adelton@fi.muni.cz,
+(c) 1997--1999 Jan Pazdziora, adelton@fi.muni.cz,
 http://www.fi.muni.cz/~adelton/ at Faculty of Informatics, Masaryk
 University in Brno, Czech Republic
 

@@ -1,4 +1,6 @@
 
+use XBase::Memo;
+
 =head1 NAME
 
 XBase - Perl module for reading and writing the dbf files
@@ -18,7 +20,7 @@ use XBase::Base;		# will give us general methods
 use vars qw( $VERSION $errstr $CLEARNULLS @ISA );
 
 @ISA = qw( XBase::Base );
-$VERSION = '0.121';
+$VERSION = '0.130';
 $CLEARNULLS = 1;		# Cut off white spaces from ends of char fields
 
 *errstr = \$XBase::Base::errstr;
@@ -36,7 +38,7 @@ sub open
 	$self->{'openoptions'} = { %options, @_ };
 
 	my %locoptions;
-	@locoptions{ qw( name readonly) } = @{$self->{'openoptions'}}{ qw( name readonly) };
+	@locoptions{ qw( name readonly ignorememo ) } = @{$self->{'openoptions'}}{ qw( name readonly ignorememo ) };
 	my $filename = $locoptions{'name'};
 	if ($filename eq '-')
 		{ return $self->SUPER::open(%locoptions); }
@@ -132,15 +134,21 @@ sub read_header
 				{ $memo = $self->{'memo'} = $self->init_memo_field() or return; }
 			if (defined $memo and $length == 10)
 				{
-				$rproc = sub {
-					my $value = shift;
-					return undef unless $value =~ /\d/;
-					$memo->read_record($value - 1) if defined $memo;
-					};
-				$wproc = sub {
-					my $value = $memo->write_record(-1, $type, shift) if defined $memo;
-					sprintf '%*.*s', $length, $length,
-						(defined $value ? $value + 1: ''); };
+				if (ref $memo eq 'XBase::Memo::Apollo') {
+					$rproc = sub { $memo->read_record(shift); };
+					$wproc = sub { $memo->write_record(shift); };
+					}
+				else {
+					$rproc = sub {
+						my $value = shift;
+						return undef unless $value =~ /\d/;
+						$memo->read_record($value - 1) if defined $memo;
+						};
+					$wproc = sub {
+						my $value = $memo->write_record(-1, $type, shift) if defined $memo;
+						sprintf '%*.*s', $length, $length,
+							(defined $value ? $value + 1: ''); };
+					}
 				}
 			elsif (defined $memo and $length == 4)
 				{
@@ -155,6 +163,36 @@ sub read_header
 				{
 				$rproc = sub { undef; };
 				$wproc = sub { ' ' x $length; };
+				}
+			}
+		elsif ($type eq 'T')	# time fields
+			{
+			$rproc = sub {
+				my ($day, $time) = unpack 'VV', $_[0];
+
+
+				my $localday = $day - 2440588;
+				my $localtime = $localday * 24 * 3600;
+				$localtime += $time / 1000;
+print STDERR "day,time: ($day,$time -> $localtime)\n";
+				return $localtime;
+
+				my $localdata = "[$localday] $localtime: @{[localtime($localtime)]}";
+
+				my $usec = $time % 1000;
+				my $hour = int($time / 3600000);
+				my $min = int(($time % 3600000) / 60000);
+				my $sec = int(($time % 60000) / 1000);
+				return "$day($localdata)-$hour:$min:$sec.$usec";
+				};
+			$wproc = sub {
+				my $localtime = shift;
+				my $day = int($localtime / (24 * 3600)) + 2440588;
+				my $time = int(($localtime % (3600 * 24)) * 1000);
+
+print STDERR "day,time: ($localtime -> $day,$time)\n";
+
+				return pack 'VV', $day, $time;	
 				}
 			}
 		$name =~ s/[\000 ].*$//s;
@@ -194,7 +232,7 @@ sub init_memo_field
 	if (defined $self->{'openoptions'}{'memofile'})
 		{ return XBase::Memo->new($self->{'openoptions'}{'memofile'}, %options); }
 	
-	for (qw( FPT fpt DBT dbt ))
+	for (qw( dbt DBT fpt FPT smt SMT dbt ))
 		{
 		my $memo;
 		my $memoname = $self->{'filename'};
@@ -590,7 +628,7 @@ sub create
 		if (not defined $length)		# defaults
 			{
 			if ($type eq "C")	{ $length = 64; }
-			elsif ($type eq "D")	{ $length = 8; }
+			elsif ($type =~ /^[TD]$/)	{ $length = 8; }
 			elsif ($type =~ /^[NF]$/)	{ $length = 8; }
 			}
 						# force correct lengths
@@ -662,14 +700,26 @@ sub drop
 sub locksh
 	{
 	my $self = shift;
-	$self->SUPER::locksh;
-	$self->{'memo'}->locksh() if defined $self->{'memo'};
+	my $ret = $self->SUPER::locksh or return;
+	if (defined $self->{'memo'}) {
+		unless ($self->{'memo'}->locksh()) {
+			$self->SUPER::unlock;
+			return;
+			}
+		}
+	$ret;
 	}
 sub lockex
 	{
 	my $self = shift;
-	$self->SUPER::lockex;
-	$self->{'memo'}->lockex() if defined $self->{'memo'};
+	my $ret = $self->SUPER::lockex or return;
+	if (defined $self->{'memo'}) {
+		unless ($self->{'memo'}->lockex()) {
+			$self->SUPER::unlock;
+			return;
+			}
+		}
+	$ret;
 	}
 sub unlock
 	{
@@ -1118,12 +1168,24 @@ information about the file and about the fields.
 Module XBase::Base(3) defines some basic functions that are inherited
 by both XBase and XBase::Memo(3) module.
 
-=head1 MEMO, INDEX, LOCKS
+=head1 DATA TYPES
+
+The character fields are returned "as is". No charset or other
+translation is done. The numbers are converted to Perl numbers. The
+date fields are returned as 8 character string of the 'YYYYMMDD' form
+and when inserting the date, you again have to provide it in this
+form. No checking for the validity of the date is done. The datetime
+field is returned in the number of seconds since 1970/1/1, possibly
+with decimal part (since it allows precision up to 1/1000 s). To get
+the fields, use the gmtime (or similar) Perl function.
 
 If there is a memo field in the dbf file, the module tries to open
-file with the same name but extension dbt or fpt. It uses module
+file with the same name but extension dbt, fpt or smt. It uses module
 XBase::Memo(3) for this. It reads and writes this memo field
-transparently (you do not know about it).
+transparently (you do not know about it) and returns the data as
+single scalar.
+
+=head1 INDEX, LOCKS
 
 B<New:> There is a small read only support available for ndx and ntx
 index files. Please see the eg/use_index file in the distribution for
@@ -1145,7 +1207,7 @@ Thanks a lot.
 
 =head1 VERSION
 
-0.120
+0.130
 
 =head1 AUTHOR
 

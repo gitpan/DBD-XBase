@@ -12,7 +12,7 @@ use XBase::Base;
 
 use vars qw( $VERSION @ISA );
 @ISA = qw( XBase::Base );
-$VERSION = '0.121';
+$VERSION = '0.129';
 
 # Read header is called from open to fill the object structures
 sub read_header
@@ -25,11 +25,16 @@ sub read_header
 		{ $self->Error("Error reading header of $self->{'filename'}: $!\n"); return; };
 
 	my ($next_for_append, $block_size, $version);
-	if ($self->{'filename'} =~ /\.fpt$/i)
+	my $filename = $self->{'filename'};
+	if ($filename =~ /\.fpt$/i)
 		{
 		($next_for_append, $block_size) = unpack 'N@6n', $header;
 		$version = 5;
 		bless $self, 'XBase::Memo::Fox';
+		}
+	elsif ($filename =~ /\.smt$/i) {
+		($next_for_append, $block_size) = unpack 'VV', $header;
+		bless $self, 'XBase::Memo::Apollo';
 		}
 	else
 		{
@@ -250,6 +255,45 @@ use XBase::Base;
 use vars qw( @ISA );
 @ISA = qw( XBase::Memo::dBaseIV );
 
+# #######################################
+# Apollo specific memo methods (smt file)
+#
+# This is a real hack! No documentation used but it works for all files
+# i have tested with. 
+#					Dirk Tostmann (tostmann@tiss.com)
+
+package XBase::Memo::Apollo;
+
+use XBase::Base;
+use vars qw( @ISA );
+@ISA = qw( XBase::Memo::dBaseIV );
+
+sub read_record
+	{
+	my ($self, $num) = @_;
+	my $result = '';
+
+	return if $num =~ /^\s+$/;
+
+	my ($block, $len, $offset) = unpack('vVV', $num);
+	$block *= 8;
+
+	$result = $self->read_from($offset * $block, $len);
+
+	$result;
+	}
+
+sub write_record
+	{
+	my ($self, $num, $type) = (shift, shift, shift);
+	my $data = join "", @_;
+	my $length = length $data;
+	$num = $self->SUPER::write_record($self->{'next_for_append'}, $data);
+	if (defined $num and $num) {
+		pack 'vVV', $self->{'block_length'} / 8 , $length, $num;
+		}
+	else { ' ' x 10; }
+	}
 1;
 
 __END__
@@ -261,17 +305,20 @@ Used indirectly, via XBase. Users should check its man page.
 =head1 DESCRIPTION
 
 Objects of this class are created to deal with memo files, currently
-.dbt and .fpt. Defines method B<read_header> to parse that header of
-the file and set object's structures, B<write_record> and
-B<last_record> to work properly on these types of file.
+.dbt, .fpt and .smt (code for this provided by Dirk Tostmann).
+Package XBase::Memo defines methods B<read_header> to parse that header
+of the file and set object's structures, B<write_record> and
+B<last_record> to write the records properly formated and find the end
+of file.
 
-There are three separate subpackages in XBase::Memo, dBaseIII, dBaseIV
-and Fox. Memo objects are effectively of one of these types and they
-specify their specific B<read_record> and B<write_record> methods.
+There are four separate subpackages in XBase::Memo, dBaseIII, dBaseIV,
+Fox and Apollo. Memo objects are effectively of one of these types and
+they override their specific record handling routines where
+appropriate.
 
 =head1 VERSION
 
-0.121
+0.129
 
 =head1 AUTHOR
 
