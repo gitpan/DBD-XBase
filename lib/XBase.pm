@@ -20,7 +20,7 @@ use XBase::Base;		# will give us general methods
 use vars qw( $VERSION $errstr $CLEARNULLS @ISA );
 
 @ISA = qw( XBase::Base );
-$VERSION = '0.132';
+$VERSION = '0.140';
 $CLEARNULLS = 1;		# Cut off white spaces from ends of char fields
 
 *errstr = \$XBase::Base::errstr;
@@ -141,7 +141,7 @@ sub read_header
 				else {
 					$rproc = sub {
 						my $value = shift;
-						return undef if not $value =~ /\d/ or $value < 0;
+						return if not $value =~ /\d/ or $value < 0;
 						$memo->read_record($value - 1) if defined $memo;
 						};
 					$wproc = sub {
@@ -153,7 +153,9 @@ sub read_header
 			elsif (defined $memo and $length == 4)
 				{
 				$rproc = sub {
-					$memo->read_record(unpack('V', $_[0]) - 1) if defined $memo;
+					my $val = unpack('V', $_[0]) - 1;
+					return if $val < 0;
+					$memo->read_record($val) if defined $memo;
 					};
 				$wproc = sub {
 					my $value = $memo->write_record(-1, $type, shift) if defined $memo;
@@ -754,9 +756,9 @@ sub prepare_select_with_index
 	{
 	my ($self, $file) = ( shift, shift );
 	my @tagopts = ();
-	if (ref $file eq 'ARRAY') {             ### this is suboptimal
-					### interface but should suffice for now
-		@tagopts = ( 'tag' => $file->[1] );
+	if (ref $file eq 'ARRAY') {		### this is suboptimal
+				### interface but should suffice for the moment
+		@tagopts = ( 'tag' => $file->[1]);
 		$file = $file->[0];
 		}
 	my $fieldnames = [ @_ ];
@@ -810,6 +812,12 @@ sub names
 sub rewind
 	{ shift->[1] = undef; '0E0'; }
 
+sub attach_index {
+	my $self = shift;
+	require XBase::Index;
+
+	}
+
 package XBase::IndexCursor;
 use vars qw( @ISA );
 @ISA = qw( XBase::Cursor );
@@ -850,14 +858,11 @@ __END__
 
 This module can read and write XBase database files, known as dbf in
 dBase and FoxPro world. It also reads memo fields from the dbt and fpt
-files, if needed. Module XBase provides simple native interface to
-XBase files. For DBI compliant database access, see the DBD::XBase
-and DBI modules.
-
-B<New:> There is a support for B<ndx> and B<ntx> index files
-available. Check the B<prepare_select_with_index> method in this man
-page, or eg/use_index if you are brave and want to help me debugging
-the code.
+files, if needed. An alpha code of reading index support for ndx, ntx,
+mdx, idx and cdx is available for testing -- see the DBD::Index(3) man
+page. Module XBase provides simple native interface to XBase files.
+For DBI compliant database access, see the DBD::XBase and DBI modules
+and their man pages.
 
 The following methods are supported by XBase module:
 
@@ -1056,8 +1061,10 @@ the following B<fetch> will return all fields.
 =item prepare_select_with_index
 
 The first parameter is the file name of the index file, the rest is
-as above. The B<fetch> will then return records in the ascending
-order, according to the index.
+as above. For index types that can hold more index structures in on
+file, use arrayref instead of the file name and in that array include
+file name and the tag name. The B<fetch> will then return records in
+the ascending order, according to the index.
 
 =back
 
@@ -1098,6 +1105,8 @@ Examples of using cursors:
 
     my $table = new XBase "employ.dbf";
     my $cur = $table->prepare_select_with_index("empid.ndx");
+    ## my $cur = $table->prepare_select_with_index(
+		["empid.cdx", "ADDRES"], "id", "address");
     $cur->find_eq(1097);
     while (my $hashref = $cur->fetch_hashref
 			and $hashref->{"ID"} == 1097)
@@ -1193,10 +1202,12 @@ single scalar.
 
 =head1 INDEX, LOCKS
 
-B<New:> There is a small read only support available for ndx and ntx
-index files. Please see the eg/use_index file in the distribution for
-examples and ideas. Send me examples of your data files and
-suggestions for interface if you need indexes.
+B<New:> A support for ndx, ntx, mdx, idx and cdx index formats is
+available with alpha status for testing. Some of the formats are
+already rather stable (ndx). Please read the XBase::Index(3) man page
+and the eg/use_index file in the distribution for examples and ideas.
+Send me examples of your data files and suggestions for interface if
+you need indexes.
 
 General locking methods are B<locksh>, B<lockex> and B<unlock> for
 shared lock, exclusive lock and unlock. They call flock but you can
@@ -1213,7 +1224,7 @@ Thanks a lot.
 
 =head1 VERSION
 
-0.132
+0.140
 
 =head1 AUTHOR
 
@@ -1221,9 +1232,25 @@ Thanks a lot.
 http://www.fi.muni.cz/~adelton/ at Faculty of Informatics, Masaryk
 University in Brno, Czech Republic
 
+All rights reserved. This package is free software; you can
+redistribute it and/or modify it under the same terms as Perl itself.
+
+=head1 THANKS
+
+Many people have provided information, test files, test results and
+patches. This project would not be so great without them. See the
+Changes file for (I hope) complete list. Thank you all, guys!
+
+Special thanks go to Erik Bachmann for his great page about the
+file structures; to Frans van Loon, William McKee, Randy Kobes and
+Dan Albertsson for longtime cooperation and many emails we've
+exchanged when fixing and polishing the modules' behaviour; and to
+Dan Albertsson for providing support for the project.
+
 =head1 SEE ALSO
 
-perl(1); DBD::XBase(3) and DBI(3) for DBI interface; dbfdump(1)
+perl(1); XBase::FAQ(3); DBD::XBase(3) and DBI(3) for DBI interface;
+dbfdump(1)
 
 =cut
 
