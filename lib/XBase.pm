@@ -227,7 +227,7 @@ dBase nor Fox*, so there are probably pieces missing.
 
 =head1 VERSION
 
-0.031
+0.032
 
 =head1 AUTHOR
 
@@ -262,7 +262,7 @@ use vars qw( $VERSION $errstr $CLEARNULLS @ISA );
 
 @ISA = qw( XBase::Base );
 
-$VERSION = "0.031";
+$VERSION = "0.032";
 
 $errstr = '';	# only after new, otherwise use method $table->errstr;
 
@@ -311,7 +311,7 @@ sub read_header
 			return;
 			};
 
-		last if substr $field_def, 0, 1 eq "\x0d";
+		last if substr($field_def, 0, 1) eq "\r";
 				# we have found the terminator
 
 		my ($name, $type, $address, $length, $decimal,
@@ -379,6 +379,8 @@ sub last_field		{ shift->{'last_field'}; }
 sub field_names		{ @{shift->{'field_names'}}; }
 # And list of field types
 sub field_types		{ @{shift->{'field_types'}}; }
+sub field_lengths     { @{shift->{'field_lengths'}}; }
+sub field_decimals    { @{shift->{'field_decimals'}}; }
 
 
 # #############################
@@ -536,8 +538,13 @@ sub process_list_on_read
 			}
 		elsif ($type eq 'N' or $type eq 'F')
 			{
-			substr($value, $self->{'field_lengths'}[$num - 1] - $self->{'field_decimals'}[$num - 1], 0) = '.';
-			$data[$num] = $value + 0;
+			my $len = $self->{'field_lengths'}[$num - 1];
+			my $dec = $self->{'field_decimals'}[$num - 1];
+			if ($dec)
+				{ $data[$num] = sprintf "%-$len.${dec}f", $value; }
+			else
+				{ $data[$num] = sprintf "%-${len}d", $value; }
+			$data[$num] += 0;
 			}
 		elsif ($type =~ /^[MGBP]$/)
 			{
@@ -619,6 +626,8 @@ sub delete_record
 	{
 	NullError();
 	my ($self, $num) = @_;
+	if ($num > $self->last_record())
+		{ Error "Can't delete record number $num, there is not so many of them\n"; return;}
 	$self->write_record($num, "*");
 	1;
 	}
@@ -626,6 +635,8 @@ sub undelete_record
 	{
 	NullError();
 	my ($self, $num) = @_;
+	if ($num > $self->last_record())
+		{ Error "Can't undelete record number $num, there is not so many of them\n"; return;}
 	$self->write_record($num, " ");
 	1;
 	}
