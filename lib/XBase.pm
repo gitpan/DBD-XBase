@@ -20,7 +20,7 @@ use XBase::Base;		# will give us general methods
 use vars qw( $VERSION $errstr $CLEARNULLS @ISA );
 
 @ISA = qw( XBase::Base );
-$VERSION = '0.210';
+$VERSION = '0.220';
 $CLEARNULLS = 1;		# Cut off white spaces from ends of char fields
 
 *errstr = \$XBase::Base::errstr;
@@ -206,7 +206,11 @@ sub read_header {
 		}
 		elsif ($type eq '0') {    # SNa : field "_NULLFLAGS"
 			$rproc = $wproc = sub { '' };
+		} elsif ($type eq 'Y') {	# Fox money
+			$rproc = sub { unpack('l', pack 'L', unpack 'V', scalar shift)/10000; };
+			$wproc = sub { scalar pack 'V', unpack 'L', pack 'l', (shift)*10000; };
 		}
+
 
 		$name =~ s/[\000 ].*$//s;
 		$name = uc $name;		# no locale yet
@@ -225,6 +229,12 @@ sub read_header {
 		$self->seek_to(0);
 		$self->{'openoptions'}{'nolongchars'} = 1;
 		return $self->read_header;
+	}
+
+	if ($lastoffset != $self->{'record_len'}
+		and not defined $self->{'openoptions'}{'ignorebadheader'}) {
+		__PACKAGE__->Error("Missmatch in header of $self->{'filename'}: record_len $self->{'record_len'} but offset $lastoffset\n");
+		return;
 	}
 
 	my $hashnames = {};		# create name-to-num_of_field hash
@@ -677,19 +687,20 @@ sub create {
 		$name = "FIELD$i" unless defined $name;
 		$name .= "\0";
 		my $type = $options{'field_types'}[$i];
-		$type = "C" unless defined $type;
+		$type = 'C' unless defined $type;
 
 		my $length = $options{'field_lengths'}[$i];
 		my $decimal = $options{'field_decimals'}[$i];
 
 		if (not defined $length) {		# defaults
-			if ($type eq "C")	{ $length = 64; }
+			if ($type eq 'C')		{ $length = 64; }
 			elsif ($type =~ /^[TD]$/)	{ $length = 8; }
 			elsif ($type =~ /^[NF]$/)	{ $length = 8; }
 		}
 						# force correct lengths
 		if ($type =~ /^[MBGP]$/)	{ $length = 10; $decimal = 0; }
-		elsif ($type eq "L")	{ $length = 1; $decimal = 0; }
+		elsif ($type eq 'L')	{ $length = 1; $decimal = 0; }
+		elsif ($type eq 'Y')	{ $length = 8; $decimal = 4; }
 
 		if (not defined $decimal) {
 			$decimal = 0;
@@ -697,7 +708,7 @@ sub create {
 		
 		$record_len += $length;
 		my $offset = $record_len;
-		if ($type eq "C") {
+		if ($type eq 'C') {
 			$decimal = int($length / 256);
 			$length %= 256;
 		}
@@ -1223,7 +1234,7 @@ Examples of using cursors:
     my $table = new XBase "employ.dbf";
     my $cur = $table->prepare_select_with_index("empid.ndx");
     ## my $cur = $table->prepare_select_with_index(
-		["empid.cdx", "ADDRES"], "id", "address");
+		["empid.cdx", "ADDRES", "char"], "id", "address");
     $cur->find_eq(1097);
     while (my $hashref = $cur->fetch_hashref
 			and $hashref->{"ID"} == 1097) {
@@ -1342,11 +1353,11 @@ Thanks a lot.
 
 =head1 VERSION
 
-0.210
+0.220
 
 =head1 AUTHOR
 
-(c) 1997--2001 Jan Pazdziora, adelton@fi.muni.cz,
+(c) 1997--2002 Jan Pazdziora, adelton@fi.muni.cz,
 http://www.fi.muni.cz/~adelton/ at Faculty of Informatics, Masaryk
 University in Brno, Czech Republic
 
