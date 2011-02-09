@@ -9,18 +9,9 @@ package XBase::Base;
 
 use strict;
 use IO::File;
-use Fcntl qw( O_RDWR O_RDONLY );
+use Fcntl qw( O_RDWR O_RDONLY O_BINARY );
 
-### I _Realy_ hate to have this code here!
-BEGIN { local $^W = 0;
-	if ($^O =~ /mswin/i) {
-		eval 'use Fcntl qw( O_BINARY )'
-	} else {
-		eval ' sub O_BINARY { 0 } '
-	}
-}
-
-$XBase::Base::VERSION = '0.129';
+$XBase::Base::VERSION = '1.00';
 
 # Sets the debug level
 $XBase::Base::DEBUG = 0;
@@ -400,11 +391,11 @@ No more description -- check the source code if you need to know more.
 
 =head1 VERSION
 
-0.129
+1.00
 
 =head1 AUTHOR
 
-(c) 1997--1999 Jan Pazdziora, adelton@fi.muni.cz
+(c) 1997--2011 Jan Pazdziora.
 
 =head1 SEE ALSO
 

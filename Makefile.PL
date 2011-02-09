@@ -1,7 +1,10 @@
 
-use 5.004;
+use 5.010;
 
+{
+local $SIG{__WARN__} = sub {};
 eval 'use XBase;';
+}
 if (Xbase->can("open_dbf")) {
 	print <<EOF;
 	You seem to have case insensitive filesystem and an old module
@@ -38,7 +41,7 @@ WriteMakefile(
 	'DISTNAME'	=> 'DBD-XBase',
 	'VERSION_FROM'	=> 'lib/DBD/XBase.pm',
     ($] >= 5.005 ? (
-	'AUTHOR'	=> 'Jan Pazdziora (adelton@fi.muni.cz)',
+	'AUTHOR'	=> 'Jan Pazdziora',
 	'ABSTRACT'	=> 'Reads and writes XBase (dbf) files, includes DBI support',
 		) : ()),
 	'PL_FILES'	=> { 'bin/dbfdump.PL' => 'bin/dbfdump',
@@ -46,6 +49,6 @@ WriteMakefile(
 	'EXE_FILES'	=> [ 'bin/dbfdump', ' bin/indexdump' ],
         'dist'		=> { COMPRESS => 'gzip -9f', SUFFIX => 'gz',
 		POSTOP => 'mv $(DISTNAME)-$(VERSION).tar.gz ../' },
-	'clean'		=> { FILES => 'bin/dbfdump bin/indexdump t/newtable.dbf t/newtable.dbt t/write.dbf t/write.dbt t/rooms1.dbf t/rooms1.cdx '},	
+	'clean'		=> { FILES => 'bin/dbfdump bin/indexdump t/newtable.* t/write*.* t/rooms.sdbm* t/rooms1.* t/tstidx* '},	
 	);
 

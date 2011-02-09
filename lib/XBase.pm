@@ -10,7 +10,7 @@ XBase - Perl module for reading and writing the dbf files
 # ############
 package XBase;
 
-use 5.004;
+use 5.010;
 use strict;
 use XBase::Base;		# will give us general methods
 
@@ -20,7 +20,7 @@ use XBase::Base;		# will give us general methods
 use vars qw( $VERSION $errstr $CLEARNULLS @ISA );
 
 @ISA = qw( XBase::Base );
-$VERSION = '0.241';
+$VERSION = '1.00';
 $CLEARNULLS = 1;		# Cut off white spaces from ends of char fields
 
 *errstr = \$XBase::Base::errstr;
@@ -1391,22 +1391,22 @@ redefine then in XBase::Base package.
 This module is built using information from and article XBase File
 Format Description by Erik Bachmann, URL
 
-	http://www.e-bachmann.dk/docs/xbase.htm
+	http://www.clicketyclick.dk/databases/xbase/format/
 
 Thanks a lot.
 
 =head1 VERSION
 
-0.241
+1.00
 
 =head1 AUTHOR
 
-(c) 1997--2003 Jan Pazdziora, adelton@fi.muni.cz,
-http://www.fi.muni.cz/~adelton/ at Faculty of Informatics, Masaryk
-University in Brno, Czech Republic
+(c) 1997--2003 Jan Pazdziora.
 
 All rights reserved. This package is free software; you can
 redistribute it and/or modify it under the same terms as Perl itself.
+
+Contact the author at jpx dash perl at adelton dot com.
 
 =head1 THANKS
 

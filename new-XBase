@@ -564,19 +564,17 @@ normal scalar.
 This module is built using information from and article XBase File
 Format Description by Erik Bachmann, URL
 
-	http://www.e-bachmann.dk/docs/xbase.htm
+	http://www.clicketyclick.dk/databases/xbase/format/
 
 Thanks a lot.
 
 =head1 VERSION
 
-0.162
+1.00
 
 =head1 AUTHOR
 
-(c) 1997--2001 Jan Pazdziora, adelton@fi.muni.cz,
-http://www.fi.muni.cz/~adelton/ at Faculty of Informatics, Masaryk
-University in Brno, Czech Republic
+(c) 1997--2011 Jan Pazdziora.
 
 All rights reserved. This package is free software; you can
 redistribute it and/or modify it under the same terms as Perl itself.
